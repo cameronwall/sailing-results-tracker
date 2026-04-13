@@ -46,18 +46,24 @@ const App: React.FC = () => {
     };
 
     const handleAddBoat = async (newBoat: Boat) => {
-        // Optimistic UI update could go here, but let's rely on DB for truth
+        // Optimistic Update
+        const updatedBoats = [...boats, newBoat];
+        setBoats(calculateScores(updatedBoats));
+
         try {
             const { error } = await supabase.from('boats').insert([{
+                id: newBoat.id, // Use client-side ID to match optimistic state
                 skipper: newBoat.skipper,
                 boat_name: newBoat.boatName,
                 sail_number: newBoat.sailNumber,
-                results: [] // New boats start empty
+                results: []
             }]);
             if (error) throw error;
         } catch (err) {
-            alert('Failed to add boat. Check console.');
-            console.error(err);
+            // Rollback on error (optional, simplified here)
+            console.error('Failed to add boat:', err);
+            // In a real app we might revert state here
+            fetchBoats(); // Re-sync with server truth
         }
     };
 
@@ -65,24 +71,36 @@ const App: React.FC = () => {
         const val = value === '' ? 0 : parseInt(value, 10);
         if (isNaN(val)) return;
 
-        // Find current boat state to update array
-        const currentBoat = boats.find(b => b.id === boatId);
-        if (!currentBoat) return;
+        // 1. Optimistic Local Update
+        const updatedBoats = boats.map(b => {
+            if (b.id === boatId) {
+                const newResults = [...b.results];
+                // Ensure array is long enough (fill with nulls if needed)
+                while (newResults.length <= raceIndex) newResults.push(null);
+                newResults[raceIndex] = val === 0 ? null : val;
+                return { ...b, results: newResults };
+            }
+            return b;
+        });
 
-        const newResults = [...currentBoat.results];
-        // Ensure array is long enough (fill with nulls if needed)
-        while (newResults.length <= raceIndex) newResults.push(null);
-        newResults[raceIndex] = val === 0 ? null : val;
+        setBoats(calculateScores(updatedBoats));
+
+        // 2. Send to DB
+        // Find the specific changed result array to send
+        const changedBoat = updatedBoats.find(b => b.id === boatId);
+        if (!changedBoat) return;
 
         try {
             const { error } = await supabase
                 .from('boats')
-                .update({ results: newResults })
+                .update({ results: changedBoat.results })
                 .eq('id', boatId);
 
             if (error) throw error;
         } catch (err) {
             console.error('Failed to update result:', err);
+            // On error, re-fetch to restore valid state
+            fetchBoats();
         }
     };
 
@@ -104,12 +122,11 @@ const App: React.FC = () => {
                 <header className="flex flex-col md:flex-row justify-between items-center mb-4">
                     <div>
                         <h1
-                            className="text-6xl font-black mb-2 tracking-tight"
+                            className="text-4xl md:text-6xl font-black mb-2 tracking-tight"
                             style={{
                                 background: 'linear-gradient(to right, #fde047, #ca8a04)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
-                                fontSize: '3.75rem',
                                 lineHeight: '1',
                                 fontWeight: 900
                             }}

@@ -7,15 +7,36 @@ export const calculateDiscards = (completedRaces: number): number => {
     return 0;
 };
 
-export const calculateScores = (boats: Boat[]): Boat[] => {
-    // 1. Determine which races have been "sailed" (at least one result entered)
-    const completedRaceIndices: number[] = [];
+export const getCompletedRaceIndices = (boats: Boat[]): number[] => {
+    const indices: number[] = [];
     for (let i = 0; i < TOTAL_RACES; i++) {
-        const hasResult = boats.some(b => b.results[i] !== null && b.results[i] !== 0);
-        if (hasResult) completedRaceIndices.push(i);
+        const hasResult = boats.some(b => {
+            const val = b.results[i];
+            return val !== null && val !== undefined && val !== 0 && Number(val) > 0;
+        });
+        if (hasResult) indices.push(i);
     }
+    return indices;
+};
 
-    const numDiscards = calculateDiscards(completedRaceIndices.length);
+export const getHighestRaceNumber = (boats: Boat[]): number => {
+    let maxRace = 0;
+    for (let i = 0; i < TOTAL_RACES; i++) {
+        const hasResult = boats.some(b => {
+            const val = b.results[i];
+            return val !== null && val !== undefined && val !== 0 && Number(val) > 0;
+        });
+        if (hasResult) {
+            maxRace = i + 1; // 1-based race number
+        }
+    }
+    return maxRace;
+};
+
+export const calculateScores = (boats: Boat[]): Boat[] => {
+    const completedRaceIndices = getCompletedRaceIndices(boats);
+    const highestRaceNumber = getHighestRaceNumber(boats);
+    const numDiscards = calculateDiscards(highestRaceNumber);
 
     const scoredBoats = boats.map(boat => {
         // Calculate scores only for completed races
@@ -23,8 +44,12 @@ export const calculateScores = (boats: Boat[]): Boat[] => {
         const penaltyScore = boats.length + 1;
 
         const seriesScores = completedRaceIndices.map(raceIdx => {
-            const res = boat.results[raceIdx];
-            return (res === null || res === 0) ? penaltyScore : res;
+            const val = boat.results[raceIdx] as any;
+            const hasScore = val !== null && val !== 0 && val !== '';
+
+            // Force number coercion just in case JSON stored strings
+            const score = hasScore ? Number(val) : penaltyScore;
+            return isNaN(score) ? penaltyScore : score;
         });
 
         // Calculate Total (Sum of all completed races)

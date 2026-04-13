@@ -72,4 +72,16 @@ describe('Scoring Logic', () => {
         const scored = calculateScores(boats);
         expect(scored[0].nett).toBe(13);
     });
+
+    it('should calculate correct Nett for Ian Saunders case (Total 72, Discards 15, 9, 8)', () => {
+        // User provided case: Total 72, Worst 3: 15, 9, 8.
+        // Sum of discards = 32. Nett should be 72 - 32 = 40.
+        // We create a mock result set that fits this profile.
+        const ianResults = [15, 9, 8, 5, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2];
+        const boats = [createBoat('Ian', ianResults)];
+
+        const scored = calculateScores(boats);
+        expect(scored[0].total).toBe(72);
+        expect(scored[0].nett).toBe(40);
+    });
 });

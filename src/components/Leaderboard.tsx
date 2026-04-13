@@ -1,6 +1,6 @@
 import React from 'react';
 import { type Boat, TOTAL_RACES } from '../types';
-import { calculateDiscards } from '../utils/scoring';
+import { calculateDiscards, getCompletedRaceIndices, getHighestRaceNumber } from '../utils/scoring';
 
 interface LeaderboardProps {
     boats: Boat[];
@@ -8,19 +8,18 @@ interface LeaderboardProps {
 
 export const Leaderboard: React.FC<LeaderboardProps> = ({ boats }) => {
     const getDiscardIndices = (boat: Boat): number[] => {
-        let racesCompleted = 0;
-        for (let i = 0; i < TOTAL_RACES; i++) {
-            if (boats.some(b => b.results[i] !== null && b.results[i] !== 0)) {
-                racesCompleted++;
-            }
-        }
-        const numDiscards = calculateDiscards(racesCompleted);
+        const completedRaceIndices = getCompletedRaceIndices(boats);
+        const highestRaceNumber = getHighestRaceNumber(boats);
+        const numDiscards = calculateDiscards(highestRaceNumber);
         if (numDiscards === 0) return [];
 
-        const numberedResults = boat.results.map((score, idx) => ({
-            score: (score === null || score === 0) ? (boats.length + 1) : score,
-            idx
-        }));
+        const numberedResults = completedRaceIndices.map(idx => {
+            const score = boat.results[idx];
+            return {
+                score: (score === null || score === 0) ? (boats.length + 1) : score,
+                idx
+            };
+        });
 
         numberedResults.sort((a, b) => b.score - a.score);
 
@@ -39,8 +38,8 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ boats }) => {
                         <tr className="border-b border-slate-700 text-xs uppercase tracking-wider text-slate-400 bg-slate-800/20">
                             <th className="p-3 text-center w-16 border-r border-slate-800 sticky left-0 z-20 bg-slate-900">Rank</th>
                             <th className="p-3 sticky left-16 z-20 bg-slate-900 border-r border-slate-800 min-w-[110px]">Skipper</th>
-                            <th className="p-3 sticky left-[174px] z-20 bg-slate-900 border-r border-slate-800 min-w-[100px]">Boat</th>
-                            <th className="p-3 sticky left-[274px] z-20 bg-slate-900 border-r border-slate-800 text-center w-24">Sail #</th>
+                            <th className="p-3 static md:sticky md:left-[174px] z-20 bg-slate-900 border-r border-slate-800 min-w-[100px]">Boat</th>
+                            <th className="p-3 static md:sticky md:left-[274px] z-20 bg-slate-900 border-r border-slate-800 text-center w-24">Sail #</th>
                             <th className="p-3 text-center border-r border-slate-800 w-24" style={{ backgroundColor: 'rgba(234, 179, 8, 0.1)', color: '#facc15' }}>Nett</th>
                             <th className="p-3 text-center border-r border-slate-800 w-24 bg-slate-900/50 text-slate-600">Total</th>
                             {races.map(r => (
@@ -60,10 +59,10 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ boats }) => {
                                     <td className="p-3 border-r border-slate-800 sticky left-16 z-10 bg-slate-900 group-hover:bg-slate-800 transition-colors">
                                         <div className="font-bold text-slate-200">{boat.skipper}</div>
                                     </td>
-                                    <td className="p-3 text-slate-400 text-sm border-r border-slate-800 sticky left-[174px] z-10 bg-slate-900 group-hover:bg-slate-800 transition-colors">
+                                    <td className="p-3 text-slate-400 text-sm border-r border-slate-800 static md:sticky md:left-[174px] z-10 bg-slate-900 group-hover:bg-slate-800 transition-colors">
                                         {boat.boatName || '-'}
                                     </td>
-                                    <td className="p-3 text-center text-slate-500 font-mono text-sm border-r border-slate-800 sticky left-[274px] z-10 bg-slate-900 group-hover:bg-slate-800 transition-colors">
+                                    <td className="p-3 text-center text-slate-500 font-mono text-sm border-r border-slate-800 static md:sticky md:left-[274px] z-10 bg-slate-900 group-hover:bg-slate-800 transition-colors">
                                         {boat.sailNumber}
                                     </td>
                                     <td className="p-3 text-center border-r border-slate-800" style={{ backgroundColor: 'rgba(234, 179, 8, 0.1)' }}>

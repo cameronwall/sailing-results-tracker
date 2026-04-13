@@ -1,7 +1,6 @@
 import React from 'react';
 import { Leaderboard } from './Leaderboard';
 import type { Boat } from '../types';
-import { Link } from 'react-router-dom';
 
 interface PublicDashboardProps {
     boats: Boat[];
@@ -11,11 +10,6 @@ export const PublicDashboard: React.FC<PublicDashboardProps> = ({ boats }) => {
     return (
         <main className="grid gap-8">
             <section>
-                <div className="flex justify-end mb-2">
-                    <Link to="/" className="text-xs text-slate-600 hover:text-slate-400 trasition">
-                        Admin Login
-                    </Link>
-                </div>
                 <Leaderboard boats={boats} />
             </section>
 
