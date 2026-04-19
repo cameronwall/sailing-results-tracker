@@ -9,4 +9,4 @@ export interface Boat {
     rank: number; // Current rank in fleet
 }
 
-export const TOTAL_RACES = 16;
+export const TOTAL_RACES = 18;
