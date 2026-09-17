@@ -29,7 +29,8 @@ interface OfficialResultsImportModalProps {
         evidenceData?: {
             sourceType: 'SCRATCH_SHEET' | 'HANDICAP_SHEET' | 'COMBINED_SHEET' | 'OTHER';
             filename: string;
-            storagePath: string;
+            storagePath?: string;
+            storagePaths?: string[];
             providerName: string;
             rawExtraction: any;
             matchedExtraction: any;
@@ -52,6 +53,7 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
     // Upload state
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [filePreviews, setFilePreviews] = useState<string[]>([]);
+    const [stagedStoragePaths, setStagedStoragePaths] = useState<string[]>([]);
     const [isExtracting, setIsExtracting] = useState(false);
     const [extractError, setExtractError] = useState<string | null>(null);
 
@@ -63,14 +65,48 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
     const [unmatchedEntries, setUnmatchedEntries] = useState<UnmatchedExtractedEntry[]>([]);
     const [isApplying, setIsApplying] = useState(false);
 
+    const cleanupStagedFiles = async (paths: string[]) => {
+        if (!paths || paths.length === 0) return;
+        try {
+            await supabase.storage.from('race-evidence').remove(paths);
+        } catch (err) {
+            console.warn('Notice: Failed to clean up staged files:', err);
+        }
+    };
+
+    const handleCloseWithCleanup = async () => {
+        if (stagedStoragePaths.length > 0) {
+            await cleanupStagedFiles(stagedStoragePaths);
+            setStagedStoragePaths([]);
+        }
+        onClose();
+    };
+
     if (!isOpen) return null;
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files) return;
         const newFiles = Array.from(e.target.files);
-        if (selectedFiles.length + newFiles.length > 2) {
-            setExtractError('You can upload at most 2 sheets (e.g. Scratch and Handicap).');
+
+        // Invariant 2: Maximum extraction batch: 3 files
+        if (selectedFiles.length + newFiles.length > 3) {
+            setExtractError('Batch limit exceeded. You can upload at most 3 sheets (e.g. Scratch, Handicap, Notes).');
             return;
+        }
+
+        // Invariant 1 & 3: Validate MIME type and size <= 10MB client-side
+        const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/heic', 'application/pdf'];
+        const maxBytes = 10 * 1024 * 1024; // 10MB
+
+        for (const file of newFiles) {
+            if (file.size > maxBytes) {
+                setExtractError(`File "${file.name}" exceeds 10MB limit (${(file.size / (1024 * 1024)).toFixed(1)}MB).`);
+                return;
+            }
+            if (file.type && !allowedTypes.includes(file.type.toLowerCase())) {
+                setExtractError(`Unsupported format "${file.type}" for "${file.name}". Supported: PNG, JPEG, WEBP, HEIC, PDF.`);
+                return;
+            }
         }
 
         const updated = [...selectedFiles, ...newFiles];
@@ -97,27 +133,38 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
         setIsExtracting(true);
         setExtractError(null);
 
-        try {
-            // Read files into base64
-            const filePayloads = await Promise.all(
-                selectedFiles.map(file => new Promise<{ filename: string; mimeType: string; dataBase64: string }>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const base64 = (reader.result as string).split(',')[1];
-                        resolve({
-                            filename: file.name,
-                            mimeType: file.type || 'image/png',
-                            dataBase64: base64
-                        });
-                    };
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                }))
-            );
+        const uploadedPaths: string[] = [];
 
-            // Attempt to call serverless API
+        try {
+            // 1. Direct-to-Storage: Upload files to private 'race-evidence/staged' namespace
+            const timestamp = Date.now();
+            const raceNum = activeRace.raceNumber;
+
+            for (const file of selectedFiles) {
+                const randomId = Math.random().toString(36).substring(2, 9);
+                const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+                const storagePath = `staged/${raceNum}/${timestamp}_${randomId}_${safeName}`;
+
+                const { error: uploadErr } = await supabase.storage
+                    .from('race-evidence')
+                    .upload(storagePath, file, {
+                        contentType: file.type || 'image/png',
+                        upsert: false
+                    });
+
+                if (uploadErr) {
+                    // Immediate cleanup of already uploaded files in this batch
+                    await cleanupStagedFiles(uploadedPaths);
+                    throw new Error(`Failed to stage "${file.name}": ${uploadErr.message}`);
+                }
+                uploadedPaths.push(storagePath);
+            }
+
+            setStagedStoragePaths(uploadedPaths);
+
+            // 2. Invoke Serverless API passing storage references only (Never Base64!)
             let extractionData: RawFleetExtractionResult | null = null;
-            let usedProvider = 'mock-vision-provider';
+            let usedProvider = 'gemini-vision-adapter';
 
             const { data: { session } } = await supabase.auth.getSession();
             const token = session?.access_token;
@@ -129,7 +176,7 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
                         'Content-Type': 'application/json',
                         'Authorization': token ? `Bearer ${token}` : ''
                     },
-                    body: JSON.stringify({ files: filePayloads })
+                    body: JSON.stringify({ storagePaths: uploadedPaths })
                 });
 
                 if (response.ok) {
@@ -138,14 +185,13 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
                         extractionData = json.data;
                         usedProvider = json.provider || 'gemini-vision-adapter';
                     }
+                } else {
+                    const errJson = await response.json().catch(() => ({}));
+                    throw new Error(errJson.error || `Server responded with status ${response.status}`);
                 }
-            } catch (apiErr) {
-                // If endpoint unreachable (e.g. in local vite dev mode without vercel cli), fallback to mock adapter
-                console.warn('API endpoint unreachable, falling back to local vision adapter:', apiErr);
-            }
-
-            // If API didn't return data, use deterministic mock adapter for testing/dev
-            if (!extractionData) {
+            } catch (apiErr: any) {
+                console.warn('API call notice:', apiErr);
+                // If API fails in development/mock fallback:
                 const mockAdapter = new MockVisionAdapter({
                     raceNumber: activeRace.raceNumber,
                     raceDate: activeRace.raceDate,
@@ -153,20 +199,24 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
                     seriesEntrantsFound: activeRace.seriesEntrants
                 });
                 extractionData = await mockAdapter.extractOfficialResults(
-                    filePayloads.map(f => ({
+                    selectedFiles.map(f => ({
                         buffer: new Uint8Array(),
-                        mimeType: f.mimeType,
-                        filename: f.filename,
-                        sizeBytes: 1000
+                        mimeType: f.type || 'image/png',
+                        filename: f.name,
+                        sizeBytes: f.size
                     }))
                 );
                 usedProvider = mockAdapter.providerName;
             }
 
+            if (!extractionData) {
+                throw new Error('Extraction failed to return structured results.');
+            }
+
             setProviderName(usedProvider);
             setRawResults([extractionData]);
 
-            // Run deterministic boat matching
+            // 3. Run deterministic boat matching
             const matchOutput = matchExtractedFleet({
                 registeredBoats,
                 qualifierBoats,
@@ -180,7 +230,10 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
             setStep('REVIEW');
 
         } catch (err: any) {
-            setExtractError(`Extraction failed: ${err.message || 'Please try again with a clearer image.'}`);
+            // Immediate cleanup on extraction failure
+            await cleanupStagedFiles(uploadedPaths);
+            setStagedStoragePaths([]);
+            setExtractError(`Extraction failed: ${err.message || 'Please try again.'}`);
         } finally {
             setIsExtracting(false);
         }
@@ -224,11 +277,11 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
             }
 
             // Persist evidence record (CRITICAL AMENDMENT 3)
-            const evidenceData = selectedFiles.length > 0 ? {
+            const evidenceData = stagedStoragePaths.length > 0 ? {
                 sourceType: 'COMBINED_SHEET' as const,
                 filename: selectedFiles.map(f => f.name).join(', '),
-                storagePath: `races/race_${activeRace.raceNumber}_${Date.now()}`,
-                files: selectedFiles,
+                storagePath: stagedStoragePaths.join(','),
+                storagePaths: stagedStoragePaths,
                 providerName,
                 rawExtraction: rawResults,
                 matchedExtraction: matchedQualifiers,
@@ -243,6 +296,8 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
 
             onClose();
         } catch (err: any) {
+            await cleanupStagedFiles(stagedStoragePaths);
+            setStagedStoragePaths([]);
             setExtractError(`Failed to apply to draft: ${err.message}`);
         } finally {
             setIsApplying(false);
@@ -278,7 +333,7 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
 
                     <button
                         type="button"
-                        onClick={onClose}
+                        onClick={handleCloseWithCleanup}
                         className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
                     >
                         ✕
@@ -432,13 +487,26 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
                 <div className="px-5 py-4 bg-slate-800/80 border-t border-slate-700/80 flex items-center justify-between gap-3">
                     {step === 'REVIEW' ? (
                         <>
-                            <button
-                                type="button"
-                                onClick={() => setStep('UPLOAD')}
-                                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 transition-colors"
-                            >
-                                ← Re-upload Sheets
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        await cleanupStagedFiles(stagedStoragePaths);
+                                        setStagedStoragePaths([]);
+                                        setStep('UPLOAD');
+                                    }}
+                                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 transition-colors"
+                                >
+                                    ← Re-upload Sheets
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleCloseWithCleanup}
+                                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
 
                             <button
                                 type="button"
@@ -463,7 +531,7 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
                         <>
                             <button
                                 type="button"
-                                onClick={onClose}
+                                onClick={handleCloseWithCleanup}
                                 className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-colors"
                             >
                                 Cancel

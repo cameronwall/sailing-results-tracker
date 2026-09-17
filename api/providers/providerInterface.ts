@@ -26,6 +26,47 @@ export const SUPPORTED_MIME_TYPES = [
 ] as const;
 
 export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+export const MAX_BATCH_FILES = 3; // Maximum 3 files per extraction batch
+
+export const validateStoragePaths = (
+    paths: unknown
+): { valid: boolean; error?: string; validatedPaths?: string[] } => {
+    if (!Array.isArray(paths) || paths.length === 0) {
+        return { valid: false, error: 'Bad Request: At least one storage path must be provided.' };
+    }
+    if (paths.length > MAX_BATCH_FILES) {
+        return { valid: false, error: `Bad Request: Batch limit exceeded. Maximum ${MAX_BATCH_FILES} files allowed.` };
+    }
+    const validatedPaths: string[] = [];
+    for (const p of paths) {
+        if (typeof p !== 'string') {
+            return { valid: false, error: 'Bad Request: Storage path must be a string.' };
+        }
+        const trimmed = p.trim();
+        // Restrict strictly to staged/ namespace, disallow path traversal
+        if (!trimmed.startsWith('staged/') || trimmed.includes('..') || trimmed.includes('\\')) {
+            return {
+                valid: false,
+                error: `Bad Request: Invalid storage path "${p}". All evidence must reside within the "staged/" namespace.`
+            };
+        }
+        validatedPaths.push(trimmed);
+    }
+    return { valid: true, validatedPaths };
+};
+
+export const getMimeTypeFromFilename = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    switch (ext) {
+        case 'png': return 'image/png';
+        case 'jpg':
+        case 'jpeg': return 'image/jpeg';
+        case 'webp': return 'image/webp';
+        case 'heic': return 'image/heic';
+        case 'pdf': return 'application/pdf';
+        default: return 'application/octet-stream';
+    }
+};
 
 export const validateInputFile = (
     file: { mimeType: string; sizeBytes: number; filename: string }

@@ -115,6 +115,7 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
         evidenceData?: any;
     }) => {
         let uploadedStoragePaths: string[] = [];
+        const stagedPaths: string[] = params.evidenceData?.storagePaths || [];
         let createdSourceId: string | null = null;
 
         try {
@@ -125,7 +126,7 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                 const { data: { user } } = await supabase.auth.getUser();
 
                 if (raceId && user) {
-                    // Upload physical files to private race-evidence bucket if files array provided
+                    // Upload physical files to private race-evidence bucket if legacy files array provided
                     if (params.evidenceData.files && params.evidenceData.files.length > 0) {
                         for (const file of params.evidenceData.files) {
                             const fileExt = file.name.split('.').pop() || 'png';
@@ -148,14 +149,18 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                         }
                     }
 
-                    // 2. Insert audit record into official_result_sources
+                    const targetStoragePath = uploadedStoragePaths.length > 0
+                        ? uploadedStoragePaths.join(',')
+                        : (stagedPaths.length > 0 ? stagedPaths.join(',') : params.evidenceData.storagePath);
+
+                    // 2. Insert audit record into official_result_sources (CRITICAL AMENDMENT 3)
                     const { data: sourceData, error: sourceErr } = await supabase
                         .from('official_result_sources')
                         .insert({
                             race_id: raceId,
                             source_type: params.evidenceData.sourceType || 'image',
                             original_filename: params.evidenceData.filename,
-                            storage_path: uploadedStoragePaths.length > 0 ? uploadedStoragePaths.join(',') : params.evidenceData.storagePath,
+                            storage_path: targetStoragePath,
                             provider_name: params.evidenceData.providerName,
                             raw_extraction: params.evidenceData.rawExtraction,
                             matched_extraction: params.evidenceData.matchedExtraction,
@@ -166,11 +171,12 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                         .single();
 
                     if (sourceErr) {
-                        // Audit record insertion failed -> remove uploaded storage objects so no orphans remain
-                        if (uploadedStoragePaths.length > 0) {
-                            await supabase.storage.from('race-evidence').remove(uploadedStoragePaths);
+                        // Audit record insertion failed -> immediate cleanup of storage objects
+                        const allPathsToCleanup = [...uploadedStoragePaths, ...stagedPaths];
+                        if (allPathsToCleanup.length > 0) {
+                            await supabase.storage.from('race-evidence').remove(allPathsToCleanup);
                         }
-                        console.warn('Official result source insertion notice:', sourceErr.message);
+                        throw new Error(`Official result source insertion failed: ${sourceErr.message}`);
                     } else if (sourceData) {
                         createdSourceId = sourceData.id;
                     }
@@ -211,10 +217,12 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
             if (createdSourceId) {
                 await supabase.from('official_result_sources').delete().eq('id', createdSourceId);
             }
-            if (uploadedStoragePaths.length > 0) {
-                await supabase.storage.from('race-evidence').remove(uploadedStoragePaths);
+            const allPathsToCleanup = [...uploadedStoragePaths, ...stagedPaths];
+            if (allPathsToCleanup.length > 0) {
+                await supabase.storage.from('race-evidence').remove(allPathsToCleanup);
             }
             alert(`Failed to apply import to draft: ${err.message}`);
+            throw err;
         }
     };
 

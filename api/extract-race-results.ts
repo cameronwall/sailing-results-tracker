@@ -1,7 +1,13 @@
 // Serverless API Endpoint: /api/extract-race-results (V2.1)
 
 import { createClient } from '@supabase/supabase-js';
-import { getExtractionProvider, validateInputFile, type ExtractionInputFile } from './providers';
+import {
+    getExtractionProvider,
+    validateInputFile,
+    validateStoragePaths,
+    getMimeTypeFromFilename,
+    type ExtractionInputFile
+} from './providers';
 
 export interface ExtractResultsApiResponse {
     success: boolean;
@@ -61,48 +67,64 @@ export default async function handler(req: any, res: any) {
             });
         }
 
-        // 3. Parse & Validate Incoming Files
-        // Supports base64 JSON payload: { files: [{ dataBase64, mimeType, filename }] }
-        const { files } = req.body || {};
-        if (!Array.isArray(files) || files.length === 0) {
+        // 3. Parse & Validate Incoming Storage References
+        // Invariant: Extraction endpoint accepts storage references, never Base64 image payloads!
+        if (req.body?.files || req.body?.dataBase64) {
             return res.status(400).json({
                 success: false,
-                error: 'Bad Request: At least one race sheet file must be provided.'
+                error: 'Bad Request: Base64 payloads are disabled. Pass storage references via { storagePaths: string[] }.'
             });
         }
 
+        const { storagePaths } = req.body || {};
+        const pathValidation = validateStoragePaths(storagePaths);
+        if (!pathValidation.valid || !pathValidation.validatedPaths) {
+            return res.status(400).json({
+                success: false,
+                error: pathValidation.error
+            });
+        }
+
+        // 4. Download & Revalidate Staged Files under Authenticated Admin Context
         const parsedFiles: ExtractionInputFile[] = [];
-        for (const file of files) {
-            if (!file.dataBase64 || !file.mimeType || !file.filename) {
-                return res.status(400).json({
+        for (const storagePath of pathValidation.validatedPaths) {
+            const { data: fileBlob, error: downloadError } = await supabase.storage
+                .from('race-evidence')
+                .download(storagePath);
+
+            if (downloadError || !fileBlob) {
+                return res.status(404).json({
                     success: false,
-                    error: 'Bad Request: Each file requires dataBase64, mimeType, and filename.'
+                    error: `Storage reference not found or inaccessible: "${storagePath}". (${downloadError?.message || 'Download error'})`
                 });
             }
 
-            const buffer = Buffer.from(file.dataBase64, 'base64');
-            const validation = validateInputFile({
-                mimeType: file.mimeType,
+            const filename = storagePath.split('/').pop() || 'sheet.png';
+            const buffer = Buffer.from(await fileBlob.arrayBuffer());
+            const mimeType = fileBlob.type || getMimeTypeFromFilename(filename);
+
+            const fileValidation = validateInputFile({
+                mimeType,
                 sizeBytes: buffer.length,
-                filename: file.filename
+                filename
             });
 
-            if (!validation.valid) {
+            if (!fileValidation.valid) {
                 return res.status(400).json({
                     success: false,
-                    error: validation.error
+                    error: fileValidation.error
                 });
             }
 
             parsedFiles.push({
                 buffer,
-                mimeType: file.mimeType,
-                filename: file.filename,
+                mimeType,
+                filename,
                 sizeBytes: buffer.length
             });
         }
 
-        // 4. Delegate to Configured Provider via Adapter
+        // 5. Delegate to Configured Provider via Adapter
         const provider = getExtractionProvider();
         const extractionResult = await provider.extractOfficialResults(parsedFiles);
 
