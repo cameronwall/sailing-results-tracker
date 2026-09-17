@@ -5,7 +5,8 @@ import type {
     KegCupBoat,
     RawQualificationInput,
     BoatQualificationStatus,
-    RaceResultSource
+    RaceResultSource,
+    Boat
 } from '../../types';
 import { AdminRaceEntry } from './AdminRaceEntry';
 import { QualificationManager } from './QualificationManager';
@@ -14,6 +15,7 @@ interface AdminDashboardViewProps {
     season: Season;
     races: RaceMeta[];
     qualifierBoats: KegCupBoat[];
+    registeredBoats?: Boat[];
     qualificationInputs: RawQualificationInput[];
     onSaveRace: (raceMeta: RaceMeta, results: Record<string, RaceResultSource>) => Promise<void>;
     onCreateRace: () => void;
@@ -25,6 +27,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     season,
     races,
     qualifierBoats,
+    registeredBoats = [],
     qualificationInputs,
     onSaveRace,
     onCreateRace,
@@ -83,6 +86,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <AdminRaceEntry
                     races={races}
                     qualifierBoats={qualifierBoats}
+                    registeredBoats={registeredBoats}
                     onSaveRace={onSaveRace}
                     onCreateRace={onCreateRace}
                 />

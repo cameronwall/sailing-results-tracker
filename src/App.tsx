@@ -22,7 +22,8 @@ import type {
     Season,
     RaceResultSource,
     RawQualificationInput,
-    BoatQualificationStatus
+    BoatQualificationStatus,
+    Boat
 } from './types';
 import { calculateScores } from './utils/scoring';
 
@@ -43,8 +44,15 @@ const App: React.FC = () => {
     const [races, setRaces] = useState<RaceMeta[]>(SAMPLE_RACES);
     const [scoredKegCupBoats, setScoredKegCupBoats] = useState<ScoredKegCupBoat[]>([]);
     const [qualificationInputs] = useState<RawQualificationInput[]>(SAMPLE_QUALIFICATION_INPUTS);
+    const [registeredBoats, setRegisteredBoats] = useState<Boat[]>([]);
 
-    // Check admin authentication
+    useEffect(() => {
+        supabase.from('boats').select('*').then(({ data }) => {
+            if (data && data.length > 0) {
+                setRegisteredBoats(data.map(mapBoatFromDB));
+            }
+        });
+    }, []);
     useEffect(() => {
         // Check URL search params for test/verification or check supabase session
         if (new URLSearchParams(window.location.search).get('admin') === 'true') {
@@ -234,6 +242,7 @@ const App: React.FC = () => {
                             season={seasonState}
                             races={races}
                             qualifierBoats={kegCupBoats}
+                            registeredBoats={registeredBoats}
                             qualificationInputs={qualificationInputs}
                             onSaveRace={handleSaveRace}
                             onCreateRace={handleCreateRace}

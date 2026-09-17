@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { RaceMeta, KegCupBoat, RaceResultSource } from '../../types';
+import type { RaceMeta, KegCupBoat, RaceResultSource, Boat } from '../../types';
 import { EntryRowCard } from './EntryRowCard';
 import { SaveActionBar } from './SaveActionBar';
 import { validateRacePublish } from '../../utils/kegCupScoring';
+import { OfficialResultsImportModal } from './import/OfficialResultsImportModal';
+import { supabase } from '../../utils/supabaseClient';
 
 interface AdminRaceEntryProps {
     races: RaceMeta[];
     qualifierBoats: KegCupBoat[];
+    registeredBoats?: Boat[];
     onSaveRace: (raceMeta: RaceMeta, results: Record<string, RaceResultSource>) => Promise<void>;
     onCreateRace: () => void;
 }
@@ -14,6 +17,7 @@ interface AdminRaceEntryProps {
 export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
     races,
     qualifierBoats,
+    registeredBoats = [],
     onSaveRace,
     onCreateRace
 }) => {
@@ -42,6 +46,7 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
     const [isSaving, setIsSaving] = useState(false);
     const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
     const [showPublishModal, setShowPublishModal] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
     const [validationResult, setValidationResult] = useState<{ valid: boolean; errors: string[]; warnings: string[] }>({ valid: true, errors: [], warnings: [] });
     const [confirmTieApproved, setConfirmTieApproved] = useState(false);
 
@@ -98,6 +103,64 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
         setValidationResult(val);
         setConfirmTieApproved(false);
         setShowPublishModal(true);
+    };
+
+    const handleApplyImportToDraft = async (params: {
+        results: Record<string, RaceResultSource>;
+        updatedMetadata?: {
+            boatsAtStart?: number;
+            seriesEntrants?: number;
+            raceDate?: string;
+        };
+        evidenceData?: any;
+    }) => {
+        // 1. Merge confirmed extracted results into active draft
+        // (CRITICAL AMENDMENT 1: Missing boats remain untouched/empty)
+        setResultsState(prev => ({
+            ...prev,
+            ...params.results
+        }));
+
+        // 2. Apply explicitly confirmed metadata choices (CRITICAL AMENDMENT 2)
+        if (params.updatedMetadata?.boatsAtStart) {
+            setBoatsAtStart(params.updatedMetadata.boatsAtStart);
+        }
+        if (params.updatedMetadata?.seriesEntrants) {
+            setSeriesEntrants(params.updatedMetadata.seriesEntrants);
+        }
+        if (params.updatedMetadata?.raceDate) {
+            setRaceDate(params.updatedMetadata.raceDate);
+        }
+
+        // 3. Mark draft dirty
+        setIsDirty(true);
+
+        // 4. Persist evidence & audit metadata immediately on draft apply (CRITICAL AMENDMENT 3)
+        if (params.evidenceData) {
+            try {
+                const activeDbRace = races.find(r => r.raceNumber === selectedRaceNumber);
+                if (activeDbRace && (activeDbRace as any).id) {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (user) {
+                        await supabase.from('official_result_sources').insert({
+                            race_id: (activeDbRace as any).id,
+                            source_type: params.evidenceData.sourceType,
+                            original_filename: params.evidenceData.filename,
+                            storage_path: params.evidenceData.storagePath,
+                            provider_name: params.evidenceData.providerName,
+                            raw_extraction: params.evidenceData.rawExtraction,
+                            matched_extraction: params.evidenceData.matchedExtraction,
+                            admin_corrections: params.evidenceData.adminCorrections || [],
+                            confirmed_by: user.id
+                        });
+                    }
+                }
+            } catch (evidenceErr) {
+                console.warn('Evidence persistence notice:', evidenceErr);
+            }
+        }
+
+        setLastSavedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     };
 
     const handleSave = async (complete: boolean) => {
@@ -192,6 +255,17 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                     >
                         <span>+</span>
                         <span>New Race</span>
+                    </button>
+
+                    {/* Import Official Results Button (V2.1) */}
+                    <button
+                        type="button"
+                        onClick={() => setShowImportModal(true)}
+                        className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 text-xs font-bold border border-amber-500/40 hover:border-amber-400 transition flex items-center gap-1.5 min-h-[44px]"
+                        title="Import official results from photo/screenshot"
+                    >
+                        <span>📷</span>
+                        <span>Import Results</span>
                     </button>
                 </div>
             </div>
@@ -389,6 +463,25 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                     </div>
                 </div>
             )}
+
+            {/* Official Results Import Modal (V2.1) */}
+            <OfficialResultsImportModal
+                isOpen={showImportModal}
+                activeRace={activeRace}
+                registeredBoats={registeredBoats.length > 0 ? registeredBoats : qualifierBoats.map(q => ({
+                    id: q.id,
+                    skipper: q.skipper,
+                    boatName: q.boatName || '',
+                    sailNumber: q.sailNumber,
+                    results: [],
+                    nett: 0,
+                    total: 0,
+                    rank: 0
+                }))}
+                qualifierBoats={qualifierBoats}
+                onClose={() => setShowImportModal(false)}
+                onApplyToDraft={handleApplyImportToDraft}
+            />
         </section>
     );
 };
