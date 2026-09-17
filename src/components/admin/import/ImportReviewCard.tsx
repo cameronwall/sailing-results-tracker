@@ -70,6 +70,7 @@ export const ImportReviewCard: React.FC<ImportReviewCardProps> = ({
 
     const getReasonLabel = (reason: string) => {
         switch (reason) {
+            case 'DUPLICATE_SAIL_NUMBER': return 'Duplicate sail number on sheet (Requires admin resolution)';
             case 'AMBIGUOUS_MATCH': return 'Ambiguous match across multiple boats';
             case 'MISSING_HANDICAP': return 'Handicap placing missing';
             case 'MISSING_SCRATCH': return 'Scratch placing missing';

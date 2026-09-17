@@ -92,73 +92,100 @@ export const mergeMultiSheetEntries = (
     mergedEntries: RawExtractedEntry[];
     sheetConflicts: Array<{ key: string; reason: string }>;
 } => {
-    const entryMap = new Map<string, RawExtractedEntry>();
+    const mergedList: RawExtractedEntry[] = [];
     const conflicts: Array<{ key: string; reason: string }> = [];
 
-    for (const result of extractionResults) {
+    // Track index in mergedList of primaryKey's first appearance, and set of sheet indices that contributed
+    const primaryKeyMap = new Map<string, { entryIndex: number; sheetIndices: Set<number> }>();
+
+    for (let sheetIdx = 0; sheetIdx < extractionResults.length; sheetIdx++) {
+        const result = extractionResults[sheetIdx];
+        const seenOnThisSheet = new Set<string>();
+
         for (const entry of result.entries) {
             const sailKey = normalizeSailNumber(entry.rawSailNumber);
             const boatKey = normalizeText(entry.rawBoatName);
             const primaryKey = sailKey || (boatKey ? `name:${boatKey}` : null);
 
             if (!primaryKey) {
-                // Anonymous entry, keep as standalone
-                entryMap.set(`anon_${Math.random()}`, { ...entry });
+                // Anonymous entry without sail or boat name -> always preserve independently
+                mergedList.push({ ...entry });
                 continue;
             }
 
-            const existing = entryMap.get(primaryKey);
-            if (!existing) {
-                entryMap.set(primaryKey, { ...entry });
+            // Invariant Check 1: SAME-SHEET DUPLICATE
+            // Two or more source rows sharing the same normalised sail number on the SAME sheet MUST NEVER be silently merged!
+            if (seenOnThisSheet.has(primaryKey)) {
+                conflicts.push({
+                    key: primaryKey,
+                    reason: `Duplicate sail number on same source sheet: ${entry.rawSailNumber || primaryKey}`
+                });
+                // Preserve this row independently
+                mergedList.push({ ...entry });
+                continue;
+            }
+
+            seenOnThisSheet.add(primaryKey);
+
+            // Invariant Check 2: MULTI-SHEET MERGE
+            // Check if seen on a PREVIOUS sheet
+            const existingRecord = primaryKeyMap.get(primaryKey);
+            if (!existingRecord) {
+                // First appearance across all sheets
+                const newIndex = mergedList.length;
+                mergedList.push({ ...entry });
+                primaryKeyMap.set(primaryKey, {
+                    entryIndex: newIndex,
+                    sheetIndices: new Set([sheetIdx])
+                });
             } else {
-                // Merge fields
-                const merged: RawExtractedEntry = { ...existing };
+                // Legitimate MULTI-SHEET MERGE (e.g. Scratch sheet + Handicap sheet)
+                const target = mergedList[existingRecord.entryIndex];
+                existingRecord.sheetIndices.add(sheetIdx);
 
-                // Scratch place
+                // Merge Scratch place
                 if (entry.scratchPlace !== null && entry.scratchPlace !== undefined) {
-                    if (existing.scratchPlace && existing.scratchPlace !== entry.scratchPlace) {
+                    if (target.scratchPlace && target.scratchPlace !== entry.scratchPlace) {
                         conflicts.push({
                             key: primaryKey,
-                            reason: `Conflicting Scratch places: ${existing.scratchPlace} vs ${entry.scratchPlace}`
+                            reason: `Conflicting Scratch places across sheets: ${target.scratchPlace} vs ${entry.scratchPlace}`
                         });
                     }
-                    merged.scratchPlace = entry.scratchPlace;
+                    target.scratchPlace = entry.scratchPlace;
                 }
 
-                // Handicap place
+                // Merge Handicap place
                 if (entry.handicapPlace !== null && entry.handicapPlace !== undefined) {
-                    if (existing.handicapPlace && existing.handicapPlace !== entry.handicapPlace) {
+                    if (target.handicapPlace && target.handicapPlace !== entry.handicapPlace) {
                         conflicts.push({
                             key: primaryKey,
-                            reason: `Conflicting Handicap places: ${existing.handicapPlace} vs ${entry.handicapPlace}`
+                            reason: `Conflicting Handicap places across sheets: ${target.handicapPlace} vs ${entry.handicapPlace}`
                         });
                     }
-                    merged.handicapPlace = entry.handicapPlace;
+                    target.handicapPlace = entry.handicapPlace;
                 }
 
-                // Status code
+                // Merge Status code
                 if (entry.statusCode && entry.statusCode !== 'NONE') {
-                    if (existing.statusCode && existing.statusCode !== 'NONE' && existing.statusCode !== entry.statusCode) {
+                    if (target.statusCode && target.statusCode !== 'NONE' && target.statusCode !== entry.statusCode) {
                         conflicts.push({
                             key: primaryKey,
-                            reason: `Conflicting status codes: ${existing.statusCode} vs ${entry.statusCode}`
+                            reason: `Conflicting status codes across sheets: ${target.statusCode} vs ${entry.statusCode}`
                         });
                     }
-                    merged.statusCode = entry.statusCode;
+                    target.statusCode = entry.statusCode;
                 }
 
                 // Fill text if missing
-                if (!merged.rawBoatName && entry.rawBoatName) merged.rawBoatName = entry.rawBoatName;
-                if (!merged.rawSkipperName && entry.rawSkipperName) merged.rawSkipperName = entry.rawSkipperName;
-                if (!merged.rawSailNumber && entry.rawSailNumber) merged.rawSailNumber = entry.rawSailNumber;
-
-                entryMap.set(primaryKey, merged);
+                if (!target.rawBoatName && entry.rawBoatName) target.rawBoatName = entry.rawBoatName;
+                if (!target.rawSkipperName && entry.rawSkipperName) target.rawSkipperName = entry.rawSkipperName;
+                if (!target.rawSailNumber && entry.rawSailNumber) target.rawSailNumber = entry.rawSailNumber;
             }
         }
     }
 
     return {
-        mergedEntries: Array.from(entryMap.values()),
+        mergedEntries: mergedList,
         sheetConflicts: conflicts
     };
 };
@@ -219,7 +246,7 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
         fuzzyScore?: number;
     }
 
-    const matchedMap = new Map<string, { entry: RawExtractedEntry; candidate: MatchCandidate }>();
+    const matchedMap = new Map<string, Array<{ entry: RawExtractedEntry; candidate: MatchCandidate }>>();
     const unmatchedEntries: UnmatchedExtractedEntry[] = [];
     const usedBoatIds = new Set<string>();
 
@@ -300,7 +327,9 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
 
         if (match) {
             usedBoatIds.add(match.boat.id);
-            matchedMap.set(match.boat.id, { entry: raw, candidate: match });
+            const currentMatches = matchedMap.get(match.boat.id) || [];
+            currentMatches.push({ entry: raw, candidate: match });
+            matchedMap.set(match.boat.id, currentMatches);
         } else {
             unmatchedEntries.push({
                 tempId: `unmatched_${i}`,
@@ -314,9 +343,9 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
     const matchedQualifiers: MatchedCompetitorResult[] = [];
 
     for (const q of qualifierBoats) {
-        const matchData = matchedMap.get(q.id);
+        const matchesForBoat = matchedMap.get(q.id) || [];
 
-        if (!matchData) {
+        if (matchesForBoat.length === 0) {
             // Case 7: Competitor absent from sheet -> MISSING
             // MUST REMAIN strictly "No result assigned". NEVER default DNC!
             matchedQualifiers.push({
@@ -337,7 +366,34 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
             continue;
         }
 
-        const { entry, candidate } = matchData;
+        // Multiple entries matched the same registered qualifier (e.g. same-sheet duplicate sail #s)
+        if (matchesForBoat.length > 1) {
+            const reviewReasons: ReviewReason[] = ['DUPLICATE_SAIL_NUMBER', 'AMBIGUOUS_MATCH'];
+            matchedQualifiers.push({
+                boatId: q.id,
+                skipper: q.skipper,
+                boatName: q.boatName || matchesForBoat[0].candidate.boat.boatName || '',
+                sailNumber: q.sailNumber,
+                isKegCupQualifier: true,
+                matchStatus: 'REVIEW',
+                reviewReasons,
+                scratchPlace: null,
+                handicapPlace: null,
+                statusCode: 'NONE',
+                rawEntries: matchesForBoat.map(m => m.entry),
+                confidenceScore: 0.5,
+                notes: `Duplicate source rows detected on sheet (${matchesForBoat.length} rows). Requires administrator resolution.`,
+                suggestedBoat: {
+                    id: q.id,
+                    skipper: q.skipper,
+                    boatName: q.boatName || '',
+                    sailNumber: q.sailNumber
+                }
+            });
+            continue;
+        }
+
+        const { entry, candidate } = matchesForBoat[0];
         const reviewReasons: ReviewReason[] = [];
 
         // Check fuzzy or ambiguous match: strictly requires administrator review

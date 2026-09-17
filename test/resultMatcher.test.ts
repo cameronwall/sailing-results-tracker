@@ -22,6 +22,7 @@ const MOCK_REGISTERED_BOATS: Boat[] = [
     { id: 'b9', skipper: 'Phil Eadie', boatName: 'Falcon', sailNumber: '215600', results: [], nett: 0, total: 0, rank: 9 },
     { id: 'b10', skipper: 'Dutchy', boatName: 'Dutch Courage', sailNumber: '179211', results: [], nett: 0, total: 0, rank: 10 },
     { id: 'b11', skipper: 'Cameron Wall', boatName: 'Plan A', sailNumber: '6121', results: [], nett: 0, total: 0, rank: 11 },
+    { id: 'b12', skipper: 'Al Beacham', boatName: 'Arethusa', sailNumber: '203780', results: [], nett: 0, total: 0, rank: 12 },
 ];
 
 const MOCK_QUALIFIERS: KegCupBoat[] = [
@@ -34,6 +35,7 @@ const MOCK_QUALIFIERS: KegCupBoat[] = [
     { id: 'b7', skipper: 'Mark Thornburrow', boatName: 'North Star', sailNumber: '217643', raceResults: {} },
     { id: 'b8', skipper: 'David Adams', boatName: 'Laser Beam', sailNumber: '189422', raceResults: {} },
     { id: 'b11', skipper: 'Cameron Wall', boatName: 'Plan A', sailNumber: '6121', raceResults: {} },
+    { id: 'b12', skipper: 'Al Beacham', boatName: 'Arethusa', sailNumber: '203780', raceResults: {} },
 ];
 
 const BASE_RACE: RaceMeta = {
@@ -419,5 +421,148 @@ describe('V2.1 Official Results Matcher & 20-Case Test Matrix', () => {
         expect(draftResultsState['b2']).toEqual({ scratchPlace: null, handicapPlace: null, statusCode: 'DNF' });
         // MISSING boat (b3) must NOT be in draftResultsState or have any DNC score!
         expect(draftResultsState['b3']).toBeUndefined();
+    });
+
+    // -------------------------------------------------------------
+    // Regression Test 1: Real MYC Duplicate Sail on SAME source sheet
+    // Al Beacham (Arethusa, 203780) & Al Beasham (Arethusa, 203780)
+    // -> Both rows preserved independently, DUPLICATE_SAIL_NUMBER & AMBIGUOUS_MATCH, matchStatus: REVIEW
+    // -------------------------------------------------------------
+    it('Regression 1: Duplicate sail on SAME source sheet (Al Beacham vs Al Beasham) -> two preserved rows + REVIEW', () => {
+        const sheet: RawFleetExtractionResult = {
+            raceNumber: 6,
+            sourceSheetType: 'COMBINED',
+            confidenceRating: 'HIGH',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beacham', scratchPlace: 23, handicapPlace: 23 },
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beasham', scratchPlace: 23, handicapPlace: 23 }
+            ]
+        };
+        const mergeRes = mergeMultiSheetEntries([sheet]);
+        // Invariant: Both rows MUST survive mergeMultiSheetEntries() independently!
+        expect(mergeRes.mergedEntries.length).toBe(2);
+        expect(mergeRes.mergedEntries[0].rawSkipperName).toBe('Al Beacham');
+        expect(mergeRes.mergedEntries[1].rawSkipperName).toBe('Al Beasham');
+        expect(mergeRes.sheetConflicts.length).toBeGreaterThan(0);
+        expect(mergeRes.sheetConflicts[0].reason).toContain('Duplicate sail number on same source sheet');
+
+        const matchRes = matchExtractedFleet({
+            registeredBoats: MOCK_REGISTERED_BOATS,
+            qualifierBoats: MOCK_QUALIFIERS,
+            activeRace: BASE_RACE,
+            extractionResults: [sheet]
+        });
+        const arethusa = matchRes.matchedQualifiers.find(b => b.boatId === 'b12')!;
+        expect(arethusa).toBeDefined();
+        expect(arethusa.matchStatus).toBe('REVIEW');
+        expect(arethusa.reviewReasons).toContain('DUPLICATE_SAIL_NUMBER');
+        expect(arethusa.reviewReasons).toContain('AMBIGUOUS_MATCH');
+        // Audit evidence: both raw entries preserved
+        expect(arethusa.rawEntries.length).toBe(2);
+        expect(arethusa.rawEntries[0].rawSkipperName).toBe('Al Beacham');
+        expect(arethusa.rawEntries[1].rawSkipperName).toBe('Al Beasham');
+    });
+
+    // -------------------------------------------------------------
+    // Regression Test 2: Same sail across DIFFERENT Scratch/Handicap sheets -> legitimate merge
+    // -------------------------------------------------------------
+    it('Regression 2: Same sail across DIFFERENT Scratch/Handicap sheets -> legitimate merge into one record', () => {
+        const scratchSheet: RawFleetExtractionResult = {
+            sourceSheetType: 'SCRATCH',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', scratchPlace: 2 }
+            ]
+        };
+        const handicapSheet: RawFleetExtractionResult = {
+            sourceSheetType: 'HANDICAP',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', handicapPlace: 4 }
+            ]
+        };
+        const mergeRes = mergeMultiSheetEntries([scratchSheet, handicapSheet]);
+        // Merged across different sheets into exactly 1 record!
+        expect(mergeRes.mergedEntries.length).toBe(1);
+        expect(mergeRes.mergedEntries[0].scratchPlace).toBe(2);
+        expect(mergeRes.mergedEntries[0].handicapPlace).toBe(4);
+        expect(mergeRes.sheetConflicts.length).toBe(0);
+    });
+
+    // -------------------------------------------------------------
+    // Regression Test 3: Three same-sheet duplicate rows -> all three preserved
+    // -------------------------------------------------------------
+    it('Regression 3: Three same-sheet duplicate rows -> all three preserved independently', () => {
+        const sheet: RawFleetExtractionResult = {
+            sourceSheetType: 'COMBINED',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beacham', scratchPlace: 1 },
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beasham', scratchPlace: 2 },
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Alan B', scratchPlace: 3 }
+            ]
+        };
+        const mergeRes = mergeMultiSheetEntries([sheet]);
+        expect(mergeRes.mergedEntries.length).toBe(3);
+        expect(mergeRes.sheetConflicts.length).toBe(2);
+
+        const matchRes = matchExtractedFleet({
+            registeredBoats: MOCK_REGISTERED_BOATS,
+            qualifierBoats: MOCK_QUALIFIERS,
+            activeRace: BASE_RACE,
+            extractionResults: [sheet]
+        });
+        const arethusa = matchRes.matchedQualifiers.find(b => b.boatId === 'b12')!;
+        expect(arethusa.matchStatus).toBe('REVIEW');
+        expect(arethusa.rawEntries.length).toBe(3);
+    });
+
+    // -------------------------------------------------------------
+    // Regression Test 4: Duplicate sail but different skipper/boat -> REVIEW
+    // -------------------------------------------------------------
+    it('Regression 4: Duplicate sail but different skipper/boat -> REVIEW', () => {
+        const sheet: RawFleetExtractionResult = {
+            sourceSheetType: 'COMBINED',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beacham', scratchPlace: 5 },
+                { rawSailNumber: '203780', rawBoatName: 'Guest Boat', rawSkipperName: 'Visitor', scratchPlace: 6 }
+            ]
+        };
+        const mergeRes = mergeMultiSheetEntries([sheet]);
+        expect(mergeRes.mergedEntries.length).toBe(2);
+
+        const matchRes = matchExtractedFleet({
+            registeredBoats: MOCK_REGISTERED_BOATS,
+            qualifierBoats: MOCK_QUALIFIERS,
+            activeRace: BASE_RACE,
+            extractionResults: [sheet]
+        });
+        const arethusa = matchRes.matchedQualifiers.find(b => b.boatId === 'b12')!;
+        expect(arethusa.matchStatus).toBe('REVIEW');
+        expect(arethusa.reviewReasons).toContain('DUPLICATE_SAIL_NUMBER');
+    });
+
+    // -------------------------------------------------------------
+    // Regression Test 5: Duplicate sail and apparently identical identity -> still preserve both and REVIEW
+    // -------------------------------------------------------------
+    it('Regression 5: Duplicate sail and apparently identical identity -> still preserve both source rows and REVIEW rather than silently deduplicate', () => {
+        const sheet: RawFleetExtractionResult = {
+            sourceSheetType: 'COMBINED',
+            entries: [
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beacham', scratchPlace: 10, handicapPlace: 10 },
+                { rawSailNumber: '203780', rawBoatName: 'Arethusa', rawSkipperName: 'Al Beacham', scratchPlace: 10, handicapPlace: 10 }
+            ]
+        };
+        const mergeRes = mergeMultiSheetEntries([sheet]);
+        // Invariant: NEVER silently deduplicate same-sheet duplicates
+        expect(mergeRes.mergedEntries.length).toBe(2);
+
+        const matchRes = matchExtractedFleet({
+            registeredBoats: MOCK_REGISTERED_BOATS,
+            qualifierBoats: MOCK_QUALIFIERS,
+            activeRace: BASE_RACE,
+            extractionResults: [sheet]
+        });
+        const arethusa = matchRes.matchedQualifiers.find(b => b.boatId === 'b12')!;
+        expect(arethusa.matchStatus).toBe('REVIEW');
+        expect(arethusa.reviewReasons).toContain('DUPLICATE_SAIL_NUMBER');
+        expect(arethusa.rawEntries.length).toBe(2);
     });
 });
