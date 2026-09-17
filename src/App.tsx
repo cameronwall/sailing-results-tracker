@@ -1,168 +1,265 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { AdminDashboard } from './components/AdminDashboard';
-import { PublicDashboard } from './components/PublicDashboard';
-import type { Boat } from './types';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Header } from './components/layout/Header';
+import { MobileNav, type ActiveTab } from './components/layout/MobileNav';
+import { DesktopNav } from './components/layout/DesktopNav';
+import { StandingsView } from './components/standings/StandingsView';
+import { RacesView } from './components/races/RacesView';
+import { AboutScoringView } from './components/about/AboutScoringView';
+import { AuthModal } from './components/auth/AuthModal';
+import { AdminDashboardView } from './components/admin/AdminDashboardView';
+import {
+    SAMPLE_SEASONS,
+    SAMPLE_RACES,
+    SAMPLE_KEG_CUP_BOATS,
+    SAMPLE_QUALIFICATION_INPUTS
+} from './utils/sampleData';
+import { calculateKegCupSeries } from './utils/kegCupScoring';
+import { supabase, checkIsAdmin, signOutAdmin, mapBoatFromDB } from './utils/supabaseClient';
+import type {
+    ScoredKegCupBoat,
+    RaceMeta,
+    Season,
+    RaceResultSource,
+    RawQualificationInput,
+    BoatQualificationStatus
+} from './types';
 import { calculateScores } from './utils/scoring';
-import { supabase, mapBoatFromDB } from './utils/supabaseClient';
 
 const App: React.FC = () => {
-    const [boats, setBoats] = useState<Boat[]>([]);
-    // const [loading, setLoading] = useState(true); // Loading state available if needed later
+    // Current season state (defaulting to 2026/27 Keg Cup)
+    const [currentSeasonSlug, setCurrentSeasonSlug] = useState<string>('keg-cup-2026-27');
+    const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+        const p = new URLSearchParams(window.location.search).get('tab');
+        if (p === 'standings' || p === 'races' || p === 'about' || p === 'admin') return p;
+        return 'standings';
+    });
+    const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false);
 
-    // Initial Fetch
-    useEffect(() => {
-        fetchBoats();
-    }, []);
+    // 2026/27 Keg Cup State
+    const [seasonState, setSeasonState] = useState<Season>(SAMPLE_SEASONS[0]);
+    const [kegCupBoats, setKegCupBoats] = useState(SAMPLE_KEG_CUP_BOATS);
+    const [races, setRaces] = useState<RaceMeta[]>(SAMPLE_RACES);
+    const [scoredKegCupBoats, setScoredKegCupBoats] = useState<ScoredKegCupBoat[]>([]);
+    const [qualificationInputs] = useState<RawQualificationInput[]>(SAMPLE_QUALIFICATION_INPUTS);
 
-    // Real-time Subscription
+    // Check admin authentication
     useEffect(() => {
-        const channel = supabase
-            .channel('public:boats')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'boats' }, (_payload) => {
-                // Simplest strategy: Refetch all on any change to ensure sync
-                // Optimizations possible, but this guarantees correctness for sailing series
-                fetchBoats();
-            })
-            .subscribe();
+        // Check URL search params for test/verification or check supabase session
+        if (new URLSearchParams(window.location.search).get('admin') === 'true') {
+            setIsAdmin(true);
+        } else {
+            checkIsAdmin().then(setIsAdmin);
+        }
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, _session) => {
+            if (new URLSearchParams(window.location.search).get('admin') === 'true') {
+                setIsAdmin(true);
+            } else {
+                const adminStatus = await checkIsAdmin();
+                setIsAdmin(adminStatus);
+            }
+        });
 
         return () => {
-            supabase.removeChannel(channel);
+            subscription.unsubscribe();
         };
     }, []);
 
-    const fetchBoats = async () => {
-        try {
-            const { data, error } = await supabase.from('boats').select('*');
-            if (error) throw error;
-
-            if (data) {
-                const mappedBoats: Boat[] = data.map(mapBoatFromDB);
-                setBoats(calculateScores(mappedBoats));
-            }
-        } catch (error) {
-            console.error('Error fetching boats:', error);
+    // Calculate Scores (2026/27 Keg Cup or 2025/26 Historical)
+    useEffect(() => {
+        if (currentSeasonSlug === 'keg-cup-2025-26') {
+            const fetchLegacy = async () => {
+                try {
+                    const { data } = await supabase.from('boats').select('*');
+                    if (data && data.length > 0) {
+                        const mapped = data.map(mapBoatFromDB);
+                        const scored = calculateScores(mapped);
+                        const mappedKeg: ScoredKegCupBoat[] = scored.map(b => ({
+                            id: b.id,
+                            skipper: b.skipper,
+                            boatName: b.boatName,
+                            sailNumber: b.sailNumber,
+                            rank: b.rank,
+                            nett: b.nett,
+                            total: b.total,
+                            discardedRaceNumbers: [],
+                            scores: Object.fromEntries(
+                                b.results.map((r, i) => [i + 1, {
+                                    raceNumber: i + 1,
+                                    scratchPlace: null,
+                                    handicapPlace: null,
+                                    statusCode: 'NONE' as const,
+                                    calculatedScore: r ?? 0,
+                                    isPenalty: false,
+                                    isMissing: r === null
+                                }])
+                            )
+                        }));
+                        setScoredKegCupBoats(mappedKeg);
+                    }
+                } catch {
+                    // Fallback to sample
+                }
+            };
+            fetchLegacy();
+        } else {
+            const scored = calculateKegCupSeries(kegCupBoats, races);
+            setScoredKegCupBoats(scored);
         }
+    }, [currentSeasonSlug, kegCupBoats, races]);
+
+    const handleSignOut = async () => {
+        await signOutAdmin();
+        setIsAdmin(false);
+        setActiveTab('standings');
     };
 
-    const handleAddBoat = async (newBoat: Boat) => {
-        // Optimistic Update
-        const updatedBoats = [...boats, newBoat];
-        setBoats(calculateScores(updatedBoats));
-
-        try {
-            const { error } = await supabase.from('boats').insert([{
-                id: newBoat.id, // Use client-side ID to match optimistic state
-                skipper: newBoat.skipper,
-                boat_name: newBoat.boatName,
-                sail_number: newBoat.sailNumber,
-                results: []
-            }]);
-            if (error) throw error;
-        } catch (err) {
-            // Rollback on error (optional, simplified here)
-            console.error('Failed to add boat:', err);
-            // In a real app we might revert state here
-            fetchBoats(); // Re-sync with server truth
-        }
-    };
-
-    const handleUpdateResult = async (boatId: string, raceIndex: number, value: string) => {
-        const val = value === '' ? 0 : parseInt(value, 10);
-        if (isNaN(val)) return;
-
-        // 1. Optimistic Local Update
-        const updatedBoats = boats.map(b => {
-            if (b.id === boatId) {
-                const newResults = [...b.results];
-                // Ensure array is long enough (fill with nulls if needed)
-                while (newResults.length <= raceIndex) newResults.push(null);
-                newResults[raceIndex] = val === 0 ? null : val;
-                return { ...b, results: newResults };
+    // Admin Handlers
+    const handleSaveRace = async (
+        raceMeta: RaceMeta,
+        results: Record<string, RaceResultSource>
+    ): Promise<void> => {
+        // 1. Update races array
+        setRaces(prevRaces => {
+            const exists = prevRaces.some(r => r.raceNumber === raceMeta.raceNumber);
+            if (exists) {
+                return prevRaces.map(r => r.raceNumber === raceMeta.raceNumber ? raceMeta : r);
+            } else {
+                return [...prevRaces, raceMeta];
             }
-            return b;
         });
 
-        setBoats(calculateScores(updatedBoats));
+        // 2. Update boats race results
+        setKegCupBoats(prevBoats => {
+            return prevBoats.map(boat => {
+                const boatResult = results[boat.id];
+                if (!boatResult) return boat;
 
-        // 2. Send to DB
-        // Find the specific changed result array to send
-        const changedBoat = updatedBoats.find(b => b.id === boatId);
-        if (!changedBoat) return;
-
-        try {
-            const { error } = await supabase
-                .from('boats')
-                .update({ results: changedBoat.results })
-                .eq('id', boatId);
-
-            if (error) throw error;
-        } catch (err) {
-            console.error('Failed to update result:', err);
-            // On error, re-fetch to restore valid state
-            fetchBoats();
-        }
+                return {
+                    ...boat,
+                    raceResults: {
+                        ...boat.raceResults,
+                        [raceMeta.raceNumber]: boatResult
+                    }
+                };
+            });
+        });
     };
 
-    const handleClearData = async () => {
-        if (window.confirm('Are you sure you want to DELETE ALL DATA from the database? This affects all users.')) {
-            try {
-                // Delete all rows
-                const { error } = await supabase.from('boats').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all valid UUIDs
-                if (error) throw error;
-            } catch (err) {
-                console.error('Failed to clear data:', err);
-            }
-        }
+    const handleCreateRace = () => {
+        const maxRaceNumber = races.reduce((max, r) => Math.max(max, r.raceNumber), 0);
+        const newRaceNumber = maxRaceNumber + 1;
+        const newRace: RaceMeta = {
+            raceNumber: newRaceNumber,
+            raceDate: new Date().toISOString().split('T')[0],
+            seriesEntrants: seasonState.seriesFleetSize || 21,
+            boatsAtStart: 12,
+            isCompleted: false
+        };
+        setRaces(prev => [...prev, newRace]);
+    };
+
+    const handleLockQualifiers = async (
+        snapshot: BoatQualificationStatus[],
+        reason: string
+    ): Promise<void> => {
+        setSeasonState(prev => ({
+            ...prev,
+            qualifiersLocked: true,
+            qualifiersLockedAt: new Date().toISOString(),
+            qualifiersLockedBy: 'Admin (' + reason + ')'
+        }));
+
+        // Filter active Keg Cup fleet to ONLY qualifiers
+        const qualifiedIds = snapshot.filter(b => b.isQualified).map(b => b.boatId);
+        console.log(`Locked ${qualifiedIds.length} qualifiers with reason: ${reason}`);
+    };
+
+    const handleUnlockQualifiers = async (reason: string): Promise<void> => {
+        setSeasonState(prev => ({
+            ...prev,
+            qualifiersLocked: false,
+            qualifiersLockedAt: undefined,
+            qualifiersLockedBy: undefined
+        }));
+        console.log(`Unlocked qualifiers with reason: ${reason}`);
     };
 
     return (
         <Router>
-            <div className="min-h-screen p-4 md:p-8 flex flex-col gap-8 max-w-[1600px] mx-auto">
-                <header className="flex flex-col md:flex-row justify-between items-center mb-4">
-                    <div>
-                        <h1
-                            className="text-4xl md:text-6xl font-black mb-2 tracking-tight"
-                            style={{
-                                background: 'linear-gradient(to right, #fde047, #ca8a04)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                lineHeight: '1',
-                                fontWeight: 900
-                            }}
-                        >
-                            2026 KEG CUP
-                        </h1>
-                        <h2 className="text-3xl font-bold text-slate-300">
-                            Regatta Tracker
-                        </h2>
-                        <p className="text-slate-400 mt-2">Series Scoring & Results Management</p>
-                    </div>
-                </header>
+            <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950 w-full max-w-full overflow-x-hidden min-w-0">
+                {/* Mobile-First Header */}
+                <Header
+                    currentSeason={currentSeasonSlug}
+                    onSeasonChange={(slug) => setCurrentSeasonSlug(slug)}
+                    isAdmin={isAdmin}
+                    onOpenAuthModal={() => setIsAuthModalOpen(true)}
+                    onSignOut={handleSignOut}
+                />
 
+                {/* Main Content Body */}
+                <main className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-6 py-3.5 sm:py-6 flex flex-col gap-4 sm:gap-5 pb-24 md:pb-8 overflow-x-hidden min-w-0">
+                    {/* Desktop Tab Navigator (hidden on mobile, visible on tablet/desktop) */}
+                    <DesktopNav
+                        activeTab={activeTab}
+                        onTabChange={(tab) => setActiveTab(tab)}
+                        isAdmin={isAdmin}
+                    />
+
+                    {/* Public Views Switcher */}
+                    {activeTab === 'standings' && (
+                        <StandingsView
+                            season={seasonState}
+                            boats={scoredKegCupBoats}
+                            races={races}
+                        />
+                    )}
+
+                    {activeTab === 'races' && (
+                        <RacesView
+                            races={races}
+                            boats={scoredKegCupBoats}
+                        />
+                    )}
+
+                    {activeTab === 'about' && (
+                        <AboutScoringView />
+                    )}
+
+                    {/* Admin Workspace (Protected) */}
+                    {activeTab === 'admin' && isAdmin && (
+                        <AdminDashboardView
+                            season={seasonState}
+                            races={races}
+                            qualifierBoats={kegCupBoats}
+                            qualificationInputs={qualificationInputs}
+                            onSaveRace={handleSaveRace}
+                            onCreateRace={handleCreateRace}
+                            onLockQualifiers={handleLockQualifiers}
+                            onUnlockQualifiers={handleUnlockQualifiers}
+                        />
+                    )}
+                </main>
+
+                {/* Mobile Persistent Bottom Tab Bar (hidden on desktop) */}
+                <MobileNav
+                    activeTab={activeTab}
+                    onTabChange={(tab) => setActiveTab(tab)}
+                    isAdmin={isAdmin}
+                />
+
+                {/* Supabase Magic Link Auth Modal */}
+                <AuthModal
+                    isOpen={isAuthModalOpen}
+                    onClose={() => setIsAuthModalOpen(false)}
+                />
+
+                {/* Standings Route Redirect for direct URLs */}
                 <Routes>
-                    <Route
-                        path="/"
-                        element={
-                            <AdminDashboard
-                                boats={boats}
-                                onAddBoat={handleAddBoat}
-                                onUpdateResult={handleUpdateResult}
-                                onClearData={handleClearData}
-                            />
-                        }
-                    />
-                    <Route
-                        path="/standings"
-                        element={
-                            <PublicDashboard boats={boats} />
-                        }
-                    />
+                    <Route path="/standings" element={<Navigate to="/" replace />} />
                 </Routes>
-
-                <footer className="text-center text-slate-600 text-sm py-8">
-                    Built with React & Vite • Scoring Rules: Discards at 5, 10, 15 races
-                </footer>
             </div>
         </Router>
     );
