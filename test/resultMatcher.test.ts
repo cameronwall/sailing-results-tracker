@@ -21,6 +21,7 @@ const MOCK_REGISTERED_BOATS: Boat[] = [
     { id: 'b8', skipper: 'David Adams', boatName: 'Laser Beam', sailNumber: '189422', results: [], nett: 0, total: 0, rank: 8 },
     { id: 'b9', skipper: 'Phil Eadie', boatName: 'Falcon', sailNumber: '215600', results: [], nett: 0, total: 0, rank: 9 },
     { id: 'b10', skipper: 'Dutchy', boatName: 'Dutch Courage', sailNumber: '179211', results: [], nett: 0, total: 0, rank: 10 },
+    { id: 'b11', skipper: 'Cameron Wall', boatName: 'Plan A', sailNumber: '6121', results: [], nett: 0, total: 0, rank: 11 },
 ];
 
 const MOCK_QUALIFIERS: KegCupBoat[] = [
@@ -32,6 +33,7 @@ const MOCK_QUALIFIERS: KegCupBoat[] = [
     { id: 'b6', skipper: 'Garth Davies', boatName: 'White Squall', sailNumber: '194720', raceResults: {} },
     { id: 'b7', skipper: 'Mark Thornburrow', boatName: 'North Star', sailNumber: '217643', raceResults: {} },
     { id: 'b8', skipper: 'David Adams', boatName: 'Laser Beam', sailNumber: '189422', raceResults: {} },
+    { id: 'b11', skipper: 'Cameron Wall', boatName: 'Plan A', sailNumber: '6121', raceResults: {} },
 ];
 
 const BASE_RACE: RaceMeta = {
@@ -116,15 +118,56 @@ describe('V2.1 Official Results Matcher & 20-Case Test Matrix', () => {
     // -------------------------------------------------------------
     // Case 5: Fuzzy Skipper/Boat Match (Similarity >= 0.85)
     // -------------------------------------------------------------
-    it('Case 5: Fuzzy Skipper/Boat Match (Similarity >= 0.85 -> Flagged strictly as REVIEW)', () => {
-        // "White Squal" instead of "White Squall", sail number missing or unrecognized
+    it('Case 5: Fuzzy Skipper/Boat Match - Exact User Example (No sail #, "C. Wall", "Plann A" -> STRICTLY REVIEW, NEVER CONFIRMED)', () => {
+        // Exact rule verification:
+        // No sail number, skipper "C. Wall", boat "Plann A"
+        // Must NEVER auto-confirm solely because similarity > 0.85
+        const res = runMatch([
+            { rawSailNumber: undefined, rawBoatName: 'Plann A', rawSkipperName: 'C. Wall', scratchPlace: 2, handicapPlace: 4 }
+        ]);
+        const planA = res.matchedQualifiers.find(b => b.boatId === 'b11')!;
+        expect(planA).toBeDefined();
+        expect(planA.matchStatus).toBe('REVIEW');
+        expect(planA.matchStatus).not.toBe('CONFIRMED');
+        expect(planA.reviewReasons).toContain('FUZZY_NAME_MATCH');
+        expect(planA.suggestedBoat?.boatName).toBe('Plan A');
+        expect(planA.suggestedBoat?.skipper).toBe('Cameron Wall');
+    });
+
+    it('Case 5B: Fuzzy Match with High Similarity (> 0.90) never auto-confirms without exact unique sail/boat', () => {
+        // "White Squal" instead of "White Squall" (single letter typo, similarity ~0.92)
         const res = runMatch([
             { rawSailNumber: '999999', rawBoatName: 'White Squal', rawSkipperName: 'Garth Davis', scratchPlace: 6, handicapPlace: 7 }
         ]);
         const garth = res.matchedQualifiers.find(b => b.boatId === 'b6')!;
         expect(garth.matchStatus).toBe('REVIEW');
+        expect(garth.matchStatus).not.toBe('CONFIRMED');
         expect(garth.reviewReasons).toContain('FUZZY_NAME_MATCH');
         expect(garth.suggestedBoat?.boatName).toBe('White Squall');
+    });
+
+    it('Case 5C: Ambiguous boat match across duplicate registrations (strictly REVIEW with AMBIGUOUS_MATCH)', () => {
+        const duplicateBoats: Boat[] = [
+            ...MOCK_REGISTERED_BOATS,
+            { id: 'b_dup', skipper: 'Someone Else', boatName: 'Zippy', sailNumber: '999999', results: [], nett: 0, total: 0, rank: 12 }
+        ];
+        // Raw entry matches boat name "Zippy" but there are 2 registered boats named "Zippy"
+        const res = matchExtractedFleet({
+            registeredBoats: duplicateBoats,
+            qualifierBoats: MOCK_QUALIFIERS,
+            activeRace: BASE_RACE,
+            extractionResults: [{
+                raceNumber: 6,
+                sourceSheetType: 'COMBINED',
+                confidenceRating: 'HIGH',
+                entries: [
+                    { rawSailNumber: '', rawBoatName: 'Zippy', scratchPlace: 1, handicapPlace: 1 }
+                ]
+            }]
+        });
+        const zippy = res.matchedQualifiers.find(b => b.boatId === 'b1')!;
+        expect(zippy.matchStatus).toBe('REVIEW');
+        expect(zippy.reviewReasons).toContain('AMBIGUOUS_MATCH');
     });
 
     // -------------------------------------------------------------

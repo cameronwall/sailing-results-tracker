@@ -30,7 +30,14 @@ export default async function handler(req: any, res: any) {
         const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://zkzxxpmsainiawsejkvc.supabase.co';
         const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
-        const supabase = createClient(supabaseUrl, supabaseAnonKey);
+        // Create Supabase client scoped to the caller's JWT (no service-role key needed or used)
+        const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+            global: {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            }
+        });
         const { data: { user }, error: userError } = await supabase.auth.getUser(token);
 
         if (userError || !user) {

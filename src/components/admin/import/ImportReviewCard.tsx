@@ -70,11 +70,12 @@ export const ImportReviewCard: React.FC<ImportReviewCardProps> = ({
 
     const getReasonLabel = (reason: string) => {
         switch (reason) {
+            case 'AMBIGUOUS_MATCH': return 'Ambiguous match across multiple boats';
             case 'MISSING_HANDICAP': return 'Handicap placing missing';
             case 'MISSING_SCRATCH': return 'Scratch placing missing';
             case 'DEAD_HEAT': return 'Shared / dead-heat finish position';
             case 'MULTI_SHEET_CONFLICT': return 'Conflicting values across sheets';
-            case 'FUZZY_NAME_MATCH': return 'Suggested fuzzy match (Confirm below)';
+            case 'FUZZY_NAME_MATCH': return 'Fuzzy match (Requires admin confirmation)';
             default: return reason;
         }
     };
@@ -118,9 +119,22 @@ export const ImportReviewCard: React.FC<ImportReviewCardProps> = ({
 
             {/* Review Warning Message if applicable */}
             {isReview && result.reviewReasons.length > 0 && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-1.5 mb-3 text-xs text-amber-200 flex items-center gap-2">
-                    <span>⚠️</span>
-                    <span>{result.reviewReasons.map(getReasonLabel).join(' · ')}</span>
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                        <span>⚠️</span>
+                        <span>{result.reviewReasons.map(getReasonLabel).join(' · ')}</span>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => onUpdateResult({
+                            ...result,
+                            matchStatus: 'CONFIRMED',
+                            reviewReasons: []
+                        })}
+                        className="px-2.5 py-1 text-xs font-bold rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition self-start sm:self-auto shrink-0"
+                    >
+                        ✓ Confirm Match
+                    </button>
                 </div>
             )}
 

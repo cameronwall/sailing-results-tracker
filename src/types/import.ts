@@ -6,6 +6,7 @@ export type MatchStatus = 'CONFIRMED' | 'REVIEW' | 'MISSING' | 'UNMATCHED';
 
 export type ReviewReason =
     | 'FUZZY_NAME_MATCH'
+    | 'AMBIGUOUS_MATCH'
     | 'MISSING_HANDICAP'
     | 'MISSING_SCRATCH'
     | 'MULTI_SHEET_CONFLICT'

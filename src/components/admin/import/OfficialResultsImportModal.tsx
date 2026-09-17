@@ -198,8 +198,8 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
 
             for (const q of matchedQualifiers) {
                 // Only populate boats that have confirmed placings or penalties
-                // CRITICAL AMENDMENT 1: MISSING boats remain empty / untouched!
-                if (q.matchStatus === 'CONFIRMED' || q.matchStatus === 'REVIEW') {
+                // CRITICAL RULE: Unconfirmed REVIEW boats and MISSING boats remain empty in draft!
+                if (q.matchStatus === 'CONFIRMED') {
                     if (q.statusCode && q.statusCode !== 'NONE') {
                         newResultsState[q.boatId] = { statusCode: q.statusCode };
                     } else if (q.scratchPlace !== null || q.handicapPlace !== null) {
@@ -227,7 +227,8 @@ export const OfficialResultsImportModal: React.FC<OfficialResultsImportModalProp
             const evidenceData = selectedFiles.length > 0 ? {
                 sourceType: 'COMBINED_SHEET' as const,
                 filename: selectedFiles.map(f => f.name).join(', '),
-                storagePath: `evidence/race_${activeRace.raceNumber}_${Date.now()}`,
+                storagePath: `races/race_${activeRace.raceNumber}_${Date.now()}`,
+                files: selectedFiles,
                 providerName,
                 rawExtraction: rawResults,
                 matchedExtraction: matchedQualifiers,

@@ -114,53 +114,108 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
         };
         evidenceData?: any;
     }) => {
-        // 1. Merge confirmed extracted results into active draft
-        // (CRITICAL AMENDMENT 1: Missing boats remain untouched/empty)
-        setResultsState(prev => ({
-            ...prev,
-            ...params.results
-        }));
+        let uploadedStoragePaths: string[] = [];
+        let createdSourceId: string | null = null;
 
-        // 2. Apply explicitly confirmed metadata choices (CRITICAL AMENDMENT 2)
-        if (params.updatedMetadata?.boatsAtStart) {
-            setBoatsAtStart(params.updatedMetadata.boatsAtStart);
-        }
-        if (params.updatedMetadata?.seriesEntrants) {
-            setSeriesEntrants(params.updatedMetadata.seriesEntrants);
-        }
-        if (params.updatedMetadata?.raceDate) {
-            setRaceDate(params.updatedMetadata.raceDate);
-        }
-
-        // 3. Mark draft dirty
-        setIsDirty(true);
-
-        // 4. Persist evidence & audit metadata immediately on draft apply (CRITICAL AMENDMENT 3)
-        if (params.evidenceData) {
-            try {
+        try {
+            // 1. If evidence files are present, upload them under authenticated admin context
+            if (params.evidenceData) {
                 const activeDbRace = races.find(r => r.raceNumber === selectedRaceNumber);
-                if (activeDbRace && (activeDbRace as any).id) {
-                    const { data: { user } } = await supabase.auth.getUser();
-                    if (user) {
-                        await supabase.from('official_result_sources').insert({
-                            race_id: (activeDbRace as any).id,
-                            source_type: params.evidenceData.sourceType,
+                const raceId = (activeDbRace as any)?.id;
+                const { data: { user } } = await supabase.auth.getUser();
+
+                if (raceId && user) {
+                    // Upload physical files to private race-evidence bucket if files array provided
+                    if (params.evidenceData.files && params.evidenceData.files.length > 0) {
+                        for (const file of params.evidenceData.files) {
+                            const fileExt = file.name.split('.').pop() || 'png';
+                            const storagePath = `races/${raceId}/${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
+                            const { error: uploadErr } = await supabase.storage
+                                .from('race-evidence')
+                                .upload(storagePath, file, {
+                                    contentType: file.type,
+                                    upsert: false
+                                });
+
+                            if (uploadErr) {
+                                // Upload failed -> cleanup any files uploaded in this batch
+                                if (uploadedStoragePaths.length > 0) {
+                                    await supabase.storage.from('race-evidence').remove(uploadedStoragePaths);
+                                }
+                                throw new Error(`Evidence upload failed: ${uploadErr.message}`);
+                            }
+                            uploadedStoragePaths.push(storagePath);
+                        }
+                    }
+
+                    // 2. Insert audit record into official_result_sources
+                    const { data: sourceData, error: sourceErr } = await supabase
+                        .from('official_result_sources')
+                        .insert({
+                            race_id: raceId,
+                            source_type: params.evidenceData.sourceType || 'image',
                             original_filename: params.evidenceData.filename,
-                            storage_path: params.evidenceData.storagePath,
+                            storage_path: uploadedStoragePaths.length > 0 ? uploadedStoragePaths.join(',') : params.evidenceData.storagePath,
                             provider_name: params.evidenceData.providerName,
                             raw_extraction: params.evidenceData.rawExtraction,
                             matched_extraction: params.evidenceData.matchedExtraction,
                             admin_corrections: params.evidenceData.adminCorrections || [],
-                            confirmed_by: user.id
-                        });
+                            uploaded_by: user.id
+                        })
+                        .select('id')
+                        .single();
+
+                    if (sourceErr) {
+                        // Audit record insertion failed -> remove uploaded storage objects so no orphans remain
+                        if (uploadedStoragePaths.length > 0) {
+                            await supabase.storage.from('race-evidence').remove(uploadedStoragePaths);
+                        }
+                        console.warn('Official result source insertion notice:', sourceErr.message);
+                    } else if (sourceData) {
+                        createdSourceId = sourceData.id;
                     }
                 }
-            } catch (evidenceErr) {
-                console.warn('Evidence persistence notice:', evidenceErr);
             }
-        }
 
-        setLastSavedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+            // 3. Merge confirmed extracted results into active draft
+            // (CRITICAL AMENDMENT 1: Missing boats remain untouched/empty)
+            setResultsState(prev => {
+                const nextState = { ...prev };
+                for (const [boatId, result] of Object.entries(params.results)) {
+                    nextState[boatId] = {
+                        ...result,
+                        ...(createdSourceId ? { sourceId: createdSourceId } : {})
+                    };
+                }
+                return nextState;
+            });
+
+            // 4. Apply explicitly confirmed metadata choices (CRITICAL AMENDMENT 2)
+            if (params.updatedMetadata?.boatsAtStart) {
+                setBoatsAtStart(params.updatedMetadata.boatsAtStart);
+            }
+            if (params.updatedMetadata?.seriesEntrants) {
+                setSeriesEntrants(params.updatedMetadata.seriesEntrants);
+            }
+            if (params.updatedMetadata?.raceDate) {
+                setRaceDate(params.updatedMetadata.raceDate);
+            }
+
+            // 5. Mark draft dirty
+            setIsDirty(true);
+            setLastSavedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+        } catch (err: any) {
+            console.error('Failed to apply import to draft:', err);
+            // Cleanup on failure: delete DB record and storage objects if created
+            if (createdSourceId) {
+                await supabase.from('official_result_sources').delete().eq('id', createdSourceId);
+            }
+            if (uploadedStoragePaths.length > 0) {
+                await supabase.storage.from('race-evidence').remove(uploadedStoragePaths);
+            }
+            alert(`Failed to apply import to draft: ${err.message}`);
+        }
     };
 
     const handleSave = async (complete: boolean) => {

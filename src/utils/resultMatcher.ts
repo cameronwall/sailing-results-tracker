@@ -215,6 +215,7 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
         boat: Boat;
         confidence: number;
         isExact: boolean;
+        isAmbiguous?: boolean;
         fuzzyScore?: number;
     }
 
@@ -230,42 +231,56 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
 
         let match: MatchCandidate | null = null;
 
-        // Stage 1: Exact Normalized Sail Number Match
+        // Stage 1: Exact Normalized Sail Number Match (Unambiguous)
         if (normSail) {
-            const found = registeredBoats.find(b => normalizeSailNumber(b.sailNumber) === normSail);
-            if (found) {
-                match = { boat: found, confidence: 1.0, isExact: true };
+            const matches = registeredBoats.filter(b => normalizeSailNumber(b.sailNumber) === normSail);
+            if (matches.length === 1) {
+                match = { boat: matches[0], confidence: 1.0, isExact: true };
+            } else if (matches.length > 1) {
+                // Ambiguous: multiple boats registered with same sail number
+                match = { boat: matches[0], confidence: 0.5, isExact: false, isAmbiguous: true };
             }
         }
 
-        // Stage 2: Exact Boat Name Match
+        // Stage 2: Exact Unique Boat Identity Match
         if (!match && normBoat) {
-            const found = registeredBoats.find(b => normalizeText(b.boatName) === normBoat);
-            if (found) {
-                match = { boat: found, confidence: 0.95, isExact: true };
+            const matches = registeredBoats.filter(b => normalizeText(b.boatName) === normBoat);
+            if (matches.length === 1) {
+                match = { boat: matches[0], confidence: 0.95, isExact: true };
+            } else if (matches.length > 1) {
+                // Duplicate boat names registered
+                match = { boat: matches[0], confidence: 0.5, isExact: false, isAmbiguous: true };
             }
         }
 
         // Stage 3: Exact Skipper + Boat combination
         if (!match && normSkipper && normBoat) {
-            const found = registeredBoats.find(
+            const matches = registeredBoats.filter(
                 b => normalizeText(b.skipper) === normSkipper && normalizeText(b.boatName) === normBoat
             );
-            if (found) {
-                match = { boat: found, confidence: 0.95, isExact: true };
+            if (matches.length === 1) {
+                match = { boat: matches[0], confidence: 0.95, isExact: true };
+            } else if (matches.length > 1) {
+                match = { boat: matches[0], confidence: 0.5, isExact: false, isAmbiguous: true };
             }
         }
 
         // Stage 4: Fuzzy String Similarity (>= 0.85) on Skipper or Boat Name
+        // CRITICAL RULE: A fuzzy skipper/boat match NEVER auto-confirms, even if similarity exceeds 0.85.
+        // It is strictly isExact: false, requiring explicit administrator confirmation (REVIEW).
         if (!match) {
             let bestScore = 0;
             let bestBoat: Boat | null = null;
+            let highSimilarityMatches = 0;
 
             for (const b of registeredBoats) {
                 const boatScore = normBoat ? stringSimilarity(normBoat, b.boatName) : 0;
                 const skipperScore = normSkipper ? stringSimilarity(normSkipper, b.skipper) : 0;
                 const maxScore = Math.max(boatScore, skipperScore);
 
+                if (maxScore >= 0.85) {
+                    highSimilarityMatches++;
+                }
                 if (maxScore > bestScore) {
                     bestScore = maxScore;
                     bestBoat = b;
@@ -276,7 +291,8 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
                 match = {
                     boat: bestBoat,
                     confidence: bestScore,
-                    isExact: false,
+                    isExact: false, // STRICTLY FALSE -> NEVER AUTO-CONFIRM
+                    isAmbiguous: highSimilarityMatches > 1,
                     fuzzyScore: bestScore
                 };
             }
@@ -324,9 +340,13 @@ export const matchExtractedFleet = (options: MatchFleetOptions): MatchFleetOutpu
         const { entry, candidate } = matchData;
         const reviewReasons: ReviewReason[] = [];
 
-        // Check fuzzy match
+        // Check fuzzy or ambiguous match: strictly requires administrator review
         if (!candidate.isExact) {
-            reviewReasons.push('FUZZY_NAME_MATCH');
+            if (candidate.isAmbiguous) {
+                reviewReasons.push('AMBIGUOUS_MATCH');
+            } else {
+                reviewReasons.push('FUZZY_NAME_MATCH');
+            }
         }
 
         // Check multi-sheet conflict for this sail/boat
