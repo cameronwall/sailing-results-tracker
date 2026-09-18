@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../utils/supabaseClient';
 import type {
     Season,
     RaceMeta,
@@ -39,6 +40,40 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         if (s === 'qualification') return 'qualification';
         return 'race-entry';
     });
+
+    // Layer 1: Opportunistic authenticated admin-triggered cleanup.
+    // Unreferenced staged evidence older than 24 hours is automatically cleaned up on the next authenticated admin session.
+    useEffect(() => {
+        const triggerStaleEvidenceCleanup = async () => {
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                const token = session?.access_token;
+                if (!token) return;
+
+                // Non-blocking fire-and-forget background cleanup
+                fetch('/api/cleanup-staged-evidence', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                }).then(async res => {
+                    if (res.ok) {
+                        const json = await res.json().catch(() => ({}));
+                        if (json.success && json.data?.deletedCount > 0) {
+                            console.info(`[Staged Evidence Cleanup] Purged ${json.data.deletedCount} unreferenced abandoned staged file(s).`);
+                        }
+                    }
+                }).catch(err => {
+                    // Safely tolerate cleanup failure; leaves failed/unprocessed objects eligible for next admin session
+                    console.warn('[Staged Evidence Cleanup notice]:', err);
+                });
+            } catch (err) {
+                console.warn('[Staged Evidence Cleanup notice]:', err);
+            }
+        };
+
+        triggerStaleEvidenceCleanup();
+    }, []);
 
     return (
         <div className="w-full space-y-5">

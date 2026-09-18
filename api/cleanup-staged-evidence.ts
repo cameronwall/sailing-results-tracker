@@ -1,5 +1,5 @@
 // Serverless Endpoint: /api/cleanup-staged-evidence (V2.1)
-// Authenticated admin endpoint for automated stale staged evidence deletion (>24h).
+// Unreferenced staged evidence older than 24 hours is automatically cleaned up on the next authenticated admin session.
 
 import { createClient } from '@supabase/supabase-js';
 import { cleanupStaleStagedEvidence } from './stagedCleanup';

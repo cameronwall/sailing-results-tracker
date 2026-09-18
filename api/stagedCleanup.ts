@@ -1,7 +1,7 @@
 // Staged Evidence Automated Cleanup Module (V2.1)
 // Invariants:
 // 1. Immediate cleanup on extraction failure, explicit Cancel, or failed audit persistence.
-// 2. Automated stale cleanup: unreferenced staged evidence older than 24 hours eligible for deletion.
+// 2. Automated stale cleanup: Unreferenced staged evidence older than 24 hours is automatically cleaned up on the next authenticated admin session.
 // 3. Permanent / audited evidence must NEVER be deleted by this cleanup process.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
