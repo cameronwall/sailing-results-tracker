@@ -4,6 +4,7 @@ import { EntryRowCard } from './EntryRowCard';
 import { SaveActionBar } from './SaveActionBar';
 import { validateRacePublish } from '../../utils/kegCupScoring';
 import { OfficialResultsImportModal } from './import/OfficialResultsImportModal';
+import { buildOfficialResultSourceInsert } from '../../types/import';
 import { supabase } from '../../utils/supabaseClient';
 
 interface AdminRaceEntryProps {
@@ -153,20 +154,24 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                         ? uploadedStoragePaths.join(',')
                         : (stagedPaths.length > 0 ? stagedPaths.join(',') : params.evidenceData.storagePath);
 
-                    // 2. Insert audit record into official_result_sources (CRITICAL AMENDMENT 3)
+                    // 2. Insert audit record into official_result_sources conforming strictly to Migration 002
+                    const insertPayload = buildOfficialResultSourceInsert({
+                        raceId,
+                        sourceType: params.evidenceData.sourceType,
+                        filename: params.evidenceData.filename,
+                        storagePath: targetStoragePath,
+                        fileSizeBytes: params.evidenceData.fileSizeBytes,
+                        mimeType: params.evidenceData.mimeType,
+                        providerName: params.evidenceData.providerName,
+                        rawExtraction: params.evidenceData.rawExtraction,
+                        matchedExtraction: params.evidenceData.matchedExtraction,
+                        adminCorrections: params.evidenceData.adminCorrections,
+                        confirmedBy: user.id
+                    });
+
                     const { data: sourceData, error: sourceErr } = await supabase
                         .from('official_result_sources')
-                        .insert({
-                            race_id: raceId,
-                            source_type: params.evidenceData.sourceType || 'image',
-                            original_filename: params.evidenceData.filename,
-                            storage_path: targetStoragePath,
-                            provider_name: params.evidenceData.providerName,
-                            raw_extraction: params.evidenceData.rawExtraction,
-                            matched_extraction: params.evidenceData.matchedExtraction,
-                            admin_corrections: params.evidenceData.adminCorrections || [],
-                            uploaded_by: user.id
-                        })
+                        .insert(insertPayload)
                         .select('id')
                         .single();
 
@@ -190,7 +195,11 @@ export const AdminRaceEntry: React.FC<AdminRaceEntryProps> = ({
                 for (const [boatId, result] of Object.entries(params.results)) {
                     nextState[boatId] = {
                         ...result,
-                        ...(createdSourceId ? { sourceId: createdSourceId } : {})
+                        ...(createdSourceId ? {
+                            sourceId: createdSourceId,
+                            importSourceId: createdSourceId
+                        } : {}),
+                        isManuallyCorrected: false
                     };
                 }
                 return nextState;

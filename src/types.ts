@@ -35,6 +35,9 @@ export interface RaceResultSource {
     handicapPlace?: number | null;
     statusCode?: ResultStatusCode;
     notes?: string;
+    sourceId?: string | null;
+    importSourceId?: string | null;
+    isManuallyCorrected?: boolean;
 }
 
 export interface CalculatedRaceResult {

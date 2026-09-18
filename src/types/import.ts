@@ -124,10 +124,82 @@ export interface AdminCorrectionRecord {
     timestamp: string;
 }
 
+export const VALID_OFFICIAL_RESULT_SOURCE_TYPES = [
+    'SCRATCH_SHEET',
+    'HANDICAP_SHEET',
+    'COMBINED_SHEET',
+    'OTHER'
+] as const;
+
+export type OfficialResultSourceType = typeof VALID_OFFICIAL_RESULT_SOURCE_TYPES[number];
+
+export interface OfficialResultSourceInsertPayload {
+    race_id: string;
+    source_type: OfficialResultSourceType;
+    original_filename: string;
+    storage_path: string;
+    file_size_bytes?: number | null;
+    mime_type?: string | null;
+    provider_name: string;
+    raw_extraction: any;
+    matched_extraction: any;
+    admin_corrections: AdminCorrectionRecord[];
+    confirmed_by: string;
+}
+
+/**
+ * Migration 002 Contract Builder:
+ * Strictly produces an insert payload adhering to public.official_result_sources in Migration 002.
+ * Validates NOT NULL fields, enforces CHECK constraint on source_type, sets confirmed_by, and forbids uploaded_by.
+ */
+export const buildOfficialResultSourceInsert = (params: {
+    raceId: string;
+    sourceType?: string;
+    filename: string;
+    storagePath: string;
+    fileSizeBytes?: number | null;
+    mimeType?: string | null;
+    providerName: string;
+    rawExtraction: any;
+    matchedExtraction: any;
+    adminCorrections?: AdminCorrectionRecord[];
+    confirmedBy: string;
+}): OfficialResultSourceInsertPayload => {
+    if (!params.raceId) {
+        throw new Error('Database contract error: race_id is required and cannot be null.');
+    }
+
+    if (!params.confirmedBy) {
+        throw new Error('Database contract error: confirmed_by is required and must be the authenticated admin UUID.');
+    }
+
+    let safeSourceType: OfficialResultSourceType = 'COMBINED_SHEET';
+    if (params.sourceType) {
+        if (!VALID_OFFICIAL_RESULT_SOURCE_TYPES.includes(params.sourceType as any)) {
+            throw new Error(`Database contract error: Invalid source_type "${params.sourceType}". Allowed: ${VALID_OFFICIAL_RESULT_SOURCE_TYPES.join(', ')}`);
+        }
+        safeSourceType = params.sourceType as OfficialResultSourceType;
+    }
+
+    return {
+        race_id: params.raceId,
+        source_type: safeSourceType,
+        original_filename: params.filename,
+        storage_path: params.storagePath,
+        file_size_bytes: params.fileSizeBytes || null,
+        mime_type: params.mimeType || null,
+        provider_name: params.providerName,
+        raw_extraction: params.rawExtraction,
+        matched_extraction: params.matchedExtraction,
+        admin_corrections: params.adminCorrections || [],
+        confirmed_by: params.confirmedBy
+    };
+};
+
 export interface OfficialResultSourceRecord {
     id: string;
     raceId: string;
-    sourceType: 'SCRATCH_SHEET' | 'HANDICAP_SHEET' | 'COMBINED_SHEET' | 'OTHER';
+    sourceType: OfficialResultSourceType;
     originalFilename: string;
     storagePath: string;
     fileSizeBytes?: number;

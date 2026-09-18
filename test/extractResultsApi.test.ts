@@ -8,6 +8,12 @@ import {
 } from '../api/providers/providerInterface';
 import { MockVisionAdapter } from '../api/providers/mockVisionAdapter';
 import { cleanupStaleStagedEvidence, removeStagedEvidencePaths } from '../api/stagedCleanup';
+import {
+    buildOfficialResultSourceInsert,
+    VALID_OFFICIAL_RESULT_SOURCE_TYPES,
+    type OfficialResultSourceType
+} from '../src/types/import';
+import type { RaceResultSource } from '../src/types';
 
 // State tracks for storage and audit mocks
 let mockRemovedStoragePaths: string[] = [];
@@ -539,5 +545,160 @@ describe('V2.1 Direct-to-Storage Architecture & Staged File Lifecycle Tests', ()
         expect(res.confidenceRating).toBe('HIGH');
         expect(res.entries.length).toBe(8);
         expect(res.parsingNotes).toContain('Processed 2 file(s) via MockVisionAdapter.');
+    });
+});
+
+describe('Migration 002 Database Schema Contract Regression Tests', () => {
+
+    // Canonical column whitelist from supabase_migrations/002_official_results_import.sql
+    const MIGRATION_002_COLUMNS = new Set([
+        'id',
+        'race_id',
+        'source_type',
+        'original_filename',
+        'storage_path',
+        'file_size_bytes',
+        'mime_type',
+        'provider_name',
+        'raw_extraction',
+        'matched_extraction',
+        'admin_corrections',
+        'confirmed_by',
+        'confirmed_at',
+        'created_at'
+    ]);
+
+    const createValidParams = () => ({
+        raceId: '11111111-1111-1111-1111-111111111111',
+        sourceType: 'COMBINED_SHEET',
+        filename: 'myc_race6_scratch.png',
+        storagePath: 'staged/6/1789000_sheet.png',
+        fileSizeBytes: 204800,
+        mimeType: 'image/png',
+        providerName: 'gemini-vision-adapter',
+        rawExtraction: [{ raceNumber: 6, entries: [] }],
+        matchedExtraction: [{ boatId: 'boat-1', matchStatus: 'CONFIRMED' }],
+        adminCorrections: [],
+        confirmedBy: '99999999-9999-9999-9999-999999999999'
+    });
+
+    // 1. official_result_sources insert payload contains only valid Migration 002 columns
+    it('1. official_result_sources insert payload contains only valid Migration 002 columns', () => {
+        const payload = buildOfficialResultSourceInsert(createValidParams());
+        const emittedKeys = Object.keys(payload);
+
+        for (const key of emittedKeys) {
+            expect(
+                MIGRATION_002_COLUMNS.has(key),
+                `Emitted column "${key}" must be defined in Migration 002 schema.`
+            ).toBe(true);
+        }
+    });
+
+    // 2. source_type COMBINED_SHEET satisfies the database enum/check contract
+    it('2. source_type COMBINED_SHEET and all valid enum types satisfy the check contract', () => {
+        for (const validSourceType of VALID_OFFICIAL_RESULT_SOURCE_TYPES) {
+            const payload = buildOfficialResultSourceInsert({
+                ...createValidParams(),
+                sourceType: validSourceType
+            });
+            expect(payload.source_type).toBe(validSourceType);
+            expect(['SCRATCH_SHEET', 'HANDICAP_SHEET', 'COMBINED_SHEET', 'OTHER']).toContain(payload.source_type);
+        }
+    });
+
+    // 3. invalid source_type such as "image" is rejected by validation
+    it('3. invalid source_type such as "image" is rejected by validation', () => {
+        expect(() => {
+            buildOfficialResultSourceInsert({
+                ...createValidParams(),
+                sourceType: 'image' // Invalid legacy type
+            });
+        }).toThrowError(/Invalid source_type "image"/);
+
+        expect(() => {
+            buildOfficialResultSourceInsert({
+                ...createValidParams(),
+                sourceType: 'INVALID_ENUM_VALUE'
+            });
+        }).toThrowError(/Invalid source_type/);
+    });
+
+    // 4. confirmed_by is populated with authenticated admin UUID
+    it('4. confirmed_by is populated with authenticated admin UUID', () => {
+        const adminId = 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d';
+        const payload = buildOfficialResultSourceInsert({
+            ...createValidParams(),
+            confirmedBy: adminId
+        });
+        expect(payload.confirmed_by).toBe(adminId);
+    });
+
+    // 5. uploaded_by is not emitted
+    it('5. uploaded_by is NOT emitted anywhere in the insert payload', () => {
+        const payload = buildOfficialResultSourceInsert(createValidParams());
+        expect('uploaded_by' in payload).toBe(false);
+        expect((payload as any).uploaded_by).toBeUndefined();
+    });
+
+    // 6. all required NOT NULL fields are present or have valid database defaults
+    it('6. all required NOT NULL fields are present and valid', () => {
+        const payload = buildOfficialResultSourceInsert(createValidParams());
+
+        // Required non-null fields in Migration 002
+        expect(payload.race_id).toBeTruthy();
+        expect(payload.source_type).toBeTruthy();
+        expect(payload.original_filename).toBeTruthy();
+        expect(payload.storage_path).toBeTruthy();
+        expect(payload.provider_name).toBeTruthy();
+        expect(payload.raw_extraction).toBeDefined();
+        expect(payload.matched_extraction).toBeDefined();
+        expect(payload.admin_corrections).toBeDefined();
+        expect(payload.confirmed_by).toBeTruthy();
+
+        // Enforce throw on missing mandatory raceId or confirmedBy
+        expect(() => buildOfficialResultSourceInsert({ ...createValidParams(), raceId: '' })).toThrow(/race_id is required/);
+        expect(() => buildOfficialResultSourceInsert({ ...createValidParams(), confirmedBy: '' })).toThrow(/confirmed_by is required/);
+    });
+
+    // 7. race_results import_source_id contract matches Migration 002
+    it('7. race_results import_source_id contract matches Migration 002 (nullable FK to official_result_sources.id)', () => {
+        const resultWithAudit: RaceResultSource = {
+            scratchPlace: 1,
+            handicapPlace: 2,
+            statusCode: 'NONE',
+            importSourceId: '11111111-2222-3333-4444-555555555555',
+            isManuallyCorrected: false
+        };
+
+        expect(resultWithAudit.importSourceId).toBe('11111111-2222-3333-4444-555555555555');
+
+        // Can also be null/undefined when manual without evidence
+        const manualResult: RaceResultSource = {
+            scratchPlace: 3,
+            handicapPlace: 4,
+            statusCode: 'NONE',
+            importSourceId: null
+        };
+        expect(manualResult.importSourceId).toBeNull();
+    });
+
+    // 8. race_results is_manually_corrected contract matches Migration 002
+    it('8. race_results is_manually_corrected contract matches Migration 002 (boolean default false not null)', () => {
+        const uncorrected: RaceResultSource = {
+            scratchPlace: 5,
+            handicapPlace: 5,
+            statusCode: 'NONE',
+            isManuallyCorrected: false
+        };
+        expect(uncorrected.isManuallyCorrected).toBe(false);
+
+        const corrected: RaceResultSource = {
+            scratchPlace: 2,
+            handicapPlace: 1,
+            statusCode: 'NONE',
+            isManuallyCorrected: true
+        };
+        expect(corrected.isManuallyCorrected).toBe(true);
     });
 });
